@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Android / Gradle (once android-app is real)
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+captures/
+
+# OS cruft
+.DS_Store

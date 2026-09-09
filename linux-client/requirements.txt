@@ -1,0 +1,8 @@
+websockets>=12.0
+
+# Real input injection — needs to run on an actual Linux machine with
+# /dev/uinput access. Not installable/testable inside a plain container.
+evdev>=1.7.1
+
+# Dev/test only
+pytest>=8.0
