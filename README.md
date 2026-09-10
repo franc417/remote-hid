@@ -28,9 +28,9 @@ that's the kernel's `uinput` interface via `python-evdev`.
 
 | Component      | Status                                              |
 | --------------- | ---------------------------------------------------- |
-| Protocol        | Defined, validated, unit tested                      |
+| Protocol        | Defined, validated, unit tested on both sides         |
 | Linux client    | Implemented — message handling fully tested; real `uinput` injection needs a real Linux box with permissions (see below) |
-| Android server  | Not started — next milestone                         |
+| Android server  | Embedded WebSocket server + protocol validation written, building via CI (see `android-app/`) — real device testing still ahead |
 | Windows client  | Not started                                          |
 | macOS client    | Not started                                          |
 

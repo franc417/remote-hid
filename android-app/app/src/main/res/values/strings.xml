@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">remote-hid</string>
+    <string name="status_idle">Server not started</string>
+</resources>
