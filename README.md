@@ -53,8 +53,30 @@ pip install -r requirements.txt
 
 `python-evdev` needs to actually create a virtual input device at
 runtime, which requires either running as root or being in a group with
-write access to `/dev/uinput` (commonly done via a udev rule — see
-evdev's docs for the exact rule for your distro).
+write access to `/dev/uinput`. On systemd-based distros (Arch included)
+the cleanest way is a udev rule that grants the active login session
+access automatically:
+
+```bash
+# load the module now, and on every boot from here on
+sudo modprobe uinput
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+
+# grant the logged-in session access to /dev/uinput
+echo 'KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"' \
+  | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Log out and back in (or reboot) for the new permission to apply to your
+session. Then confirm it actually works, independent of any network or
+phone involvement, with:
+
+```bash
+python3 smoke_test.py
+```
+
+If your cursor traces a small square on screen, `uinput` is working.
 
 ### Run
 
