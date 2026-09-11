@@ -4,5 +4,11 @@ websockets>=12.0
 # /dev/uinput access. Not installable/testable inside a plain container.
 evdev>=1.7.1
 
+# GUI (gui.py) — usually already available as a system package rather
+# than pip-installable; see README.md for the exact package name per
+# distro. Only needed if you want the app; client.py's CLI form works
+# without it.
+# tkinter
+
 # Dev/test only
 pytest>=8.0

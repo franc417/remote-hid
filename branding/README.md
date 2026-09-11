@@ -21,9 +21,6 @@
 ```
 
 Copies the SVG into your user icon theme and installs the `.desktop`
-entry, wired to this checkout's `linux-client/client.py`. Honest caveat:
-the client currently requires a `ws://<ip>:<port>` argument to do
-anything, so launching from an app menu today just opens a terminal
-showing the usage message — this is here for the icon/branding
-plumbing now, ahead of the client having something like a "last
-connected phone" default to actually make a bare launch useful.
+entry, wired to this checkout's `linux-client/gui.py`. The GUI has its
+own address field and remembers the last one you used, so a bare
+launch from the app menu now actually works — no arguments needed.

@@ -2,7 +2,7 @@
 Type=Application
 Name=remote-hid
 Comment=Wireless trackpad + keyboard client
-Exec=python3 __CLIENT_PATH__ %U
+Exec=python3 __CLIENT_PATH__
 Icon=remote-hid
-Terminal=true
+Terminal=false
 Categories=Utility;

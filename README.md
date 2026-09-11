@@ -29,7 +29,7 @@ that's the kernel's `uinput` interface via `python-evdev`.
 | Component      | Status                                              |
 | --------------- | ---------------------------------------------------- |
 | Protocol        | Defined, validated, unit tested on both sides         |
-| Linux client    | Implemented — message handling fully tested; real `uinput` injection needs a real Linux box with permissions (see below) |
+| Linux client    | Implemented — message handling fully tested; GUI app (`gui.py`) tested end-to-end including a caught-and-fixed cross-thread Tkinter bug; real `uinput` injection needs a real Linux box with permissions (see below) |
 | Android server  | Embedded WebSocket server + protocol validation written, building via CI (see `android-app/`) — real device testing still ahead |
 | Windows client  | Not started                                          |
 | macOS client    | Not started                                          |
@@ -44,18 +44,27 @@ That part needs verification on your actual machine.
 
 ## Linux client
 
-### Setup
+### Setup (Debian/Ubuntu/Mint)
 
 ```bash
-cd linux-client
-pip install -r requirements.txt
+sudo apt install python3-evdev python3-websockets python3-tk
 ```
 
-`python-evdev` needs to actually create a virtual input device at
-runtime, which requires either running as root or being in a group with
-write access to `/dev/uinput`. On systemd-based distros (Arch included)
-the cleanest way is a udev rule that grants the active login session
-access automatically:
+`python3-tk` is only needed for the GUI app (`gui.py`) — skip it if
+you're only ever going to use the `client.py` command-line form.
+
+### Setup (Arch)
+
+```bash
+sudo pacman -S python-evdev python-websockets tk
+```
+
+### uinput permissions (all distros, systemd-based)
+
+`evdev` needs to actually create a virtual input device at runtime,
+which requires either running as root or being in a group with write
+access to `/dev/uinput`. The cleanest way is a udev rule that grants the
+active login session access automatically:
 
 ```bash
 # load the module now, and on every boot from here on
@@ -73,22 +82,43 @@ session. Then confirm it actually works, independent of any network or
 phone involvement, with:
 
 ```bash
+cd linux-client
 python3 smoke_test.py
 ```
 
 If your cursor traces a small square on screen, `uinput` is working.
 
-### Run
+### Run — as an app
 
 ```bash
+python3 gui.py
+```
+
+A small window: type the phone's `ws://<ip>:<port>` (shown on the
+phone's screen once the Android app is running), hit Connect. It
+remembers the address for next time, so after the first run you won't
+need to type it again. `branding/generate-icons.sh
+--install-desktop-icon` installs this as a real launcher entry in your
+application menu, icon included.
+
+### Run — as a command (for scripting/debugging)
+
+```bash
+cd linux-client
 python3 client.py ws://<phone-ip>:<port>
 ```
 
 ### Test
 
 ```bash
+cd linux-client
 python3 -m pytest tests/ -v
 ```
+
+GUI tests need a display — they skip automatically if there isn't one
+(e.g. a bare CI box), and run for real on your actual desktop. To force
+them headless: `xvfb-run -a python3 -m pytest tests/test_gui.py -v`
+(needs the `xvfb` package).
 
 ## Roadmap
 

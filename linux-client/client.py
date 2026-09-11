@@ -11,9 +11,11 @@ import websockets
 from handler import handle_message
 
 
-async def run_client(uri: str, backend) -> None:
+async def run_client(uri: str, backend, on_status=None) -> None:
     async with websockets.connect(uri) as ws:
         print(f"[client] connected to {uri}")
+        if on_status:
+            on_status(f"Connected to {uri}")
         async for raw_frame in ws:
             try:
                 msg = json.loads(raw_frame)
@@ -22,6 +24,8 @@ async def run_client(uri: str, backend) -> None:
                 continue
             handle_message(msg, backend)
         print("[client] connection closed")
+        if on_status:
+            on_status("Disconnected (connection closed)")
 
 
 def main():

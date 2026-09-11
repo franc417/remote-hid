@@ -23,6 +23,11 @@ class InputBackend(ABC):
     @abstractmethod
     def key(self, code: str, action: str, mods: list) -> None: ...
 
+    def close(self) -> None:
+        """Releases any resources held by the backend. Default is a
+        no-op — MockBackend needs no cleanup; UinputBackend overrides
+        this to actually close the virtual device."""
+
 
 class MockBackend(InputBackend):
     """Records calls instead of touching real hardware. Used in tests."""

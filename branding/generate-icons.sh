@@ -42,8 +42,8 @@ if [ "${1:-}" = "--install-desktop-icon" ]; then
   mkdir -p "$ICON_DIR" "$DESKTOP_DIR"
   cp "$SVG" "$ICON_DIR/remote-hid.svg"
   cp "$SCRIPT_DIR/remote-hid.desktop" "$DESKTOP_DIR/remote-hid.desktop"
-  # Point Exec at this checkout's client.py rather than a hardcoded path
-  sed -i "s|__CLIENT_PATH__|$REPO_ROOT/linux-client/client.py|" "$DESKTOP_DIR/remote-hid.desktop"
+  # Point Exec at this checkout's GUI app rather than a hardcoded path
+  sed -i "s|__CLIENT_PATH__|$REPO_ROOT/linux-client/gui.py|" "$DESKTOP_DIR/remote-hid.desktop"
   update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
   gtk-update-icon-cache "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
   echo "Installed desktop icon + launcher entry (icon theme cache may take a moment to refresh)."
