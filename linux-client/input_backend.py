@@ -64,6 +64,8 @@ KEY_MAP.update({
     "Comma": "KEY_COMMA",
     "Period": "KEY_DOT",
 })
+for _n in range(1, 13):
+    KEY_MAP[f"F{_n}"] = f"KEY_F{_n}"
 
 MOD_MAP = {
     "ctrl": "KEY_LEFTCTRL",

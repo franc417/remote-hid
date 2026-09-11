@@ -2,15 +2,22 @@ package com.remotehid.server.input
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.util.AttributeSet
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 
-private val ARMED_COLOR = Color.parseColor("#3A3A3A")
-private val NORMAL_COLOR = Color.parseColor("#1C1C1C")
-private const val LABEL_COLOR = Color.WHITE
+private val KEY_COLOR = Color.parseColor("#1E1E1E")
+private val KEY_PRESSED_COLOR = Color.parseColor("#333333")
+private val MODIFIER_COLOR = Color.parseColor("#4A4A4A")
+private val MODIFIER_PRESSED_COLOR = Color.parseColor("#5E5E5E")
+private val ARMED_COLOR = Color.parseColor("#E8E8E8")
+private val ARMED_PRESSED_COLOR = Color.parseColor("#D0D0D0")
+private const val TEXT_COLOR_LIGHT = Color.WHITE
+private const val TEXT_COLOR_DARK = Color.BLACK
 
 private data class KeySpec(
     val label: String,
@@ -18,16 +25,19 @@ private data class KeySpec(
     val sticky: Boolean = false,
     val inert: Boolean = false,
     val weight: Float = 1f,
+    val fnLabel: String? = null,
+    val fnCode: String? = null,
 )
 
 /**
  * Full on-screen keyboard: number row, three letter rows, a modifier
  * dock, and an arrow cluster — matching the split-view design mockups.
  *
- * Ctrl/Alt/Shift are sticky: tap arms it (highlighted), the armed set
- * is attached to the next normal key's "mods", then cleared. Fn and 123
- * are present but inert for now — see android-app/README.md for what's
- * not wired up yet (F-row swap, symbol row).
+ * Ctrl/Alt/Shift are sticky: tap arms it (highlighted white/black), the
+ * armed set is attached to the next normal key's "mods", then cleared.
+ * Fn is a persistent toggle: swaps the number row between digits and
+ * F1-F10 until tapped again. 123 is still inert — see
+ * android-app/README.md for what's not wired up yet.
  *
  * Emits key events as protocol-shaped maps via onEvent — this view
  * knows nothing about WebSockets or JSON.
@@ -39,8 +49,14 @@ class KeyboardView @JvmOverloads constructor(
 
     var onEvent: ((Map<String, Any?>) -> Unit)? = null
 
+    private val keyRadiusPx = 10f * resources.displayMetrics.density
+
     private val armedMods = mutableSetOf<String>()
-    private val modifierButtons = mutableMapOf<String, TextView>()
+    private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
+    private val modifierButtons = mutableMapOf<String, StickyInfo>()
+
+    private var fnActive = false
+    private val fnSwappableKeys = mutableListOf<Pair<TextView, KeySpec>>()
 
     init {
         orientation = VERTICAL
@@ -55,10 +71,16 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun digitsRow() = listOf(
-        KeySpec("1", "Digit1"), KeySpec("2", "Digit2"), KeySpec("3", "Digit3"),
-        KeySpec("4", "Digit4"), KeySpec("5", "Digit5"), KeySpec("6", "Digit6"),
-        KeySpec("7", "Digit7"), KeySpec("8", "Digit8"), KeySpec("9", "Digit9"),
-        KeySpec("0", "Digit0"),
+        KeySpec("1", "Digit1", fnLabel = "F1", fnCode = "F1"),
+        KeySpec("2", "Digit2", fnLabel = "F2", fnCode = "F2"),
+        KeySpec("3", "Digit3", fnLabel = "F3", fnCode = "F3"),
+        KeySpec("4", "Digit4", fnLabel = "F4", fnCode = "F4"),
+        KeySpec("5", "Digit5", fnLabel = "F5", fnCode = "F5"),
+        KeySpec("6", "Digit6", fnLabel = "F6", fnCode = "F6"),
+        KeySpec("7", "Digit7", fnLabel = "F7", fnCode = "F7"),
+        KeySpec("8", "Digit8", fnLabel = "F8", fnCode = "F8"),
+        KeySpec("9", "Digit9", fnLabel = "F9", fnCode = "F9"),
+        KeySpec("0", "Digit0", fnLabel = "F10", fnCode = "F10"),
     )
 
     private fun qwertyRow() = "qwertyuiop".map { KeySpec(it.toString(), "Key${it.uppercaseChar()}") }
@@ -71,10 +93,11 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun modDockRow() = listOf(
+        KeySpec("esc", "Escape"),
         KeySpec("ctrl", "ctrl", sticky = true),
         KeySpec("alt", "alt", sticky = true),
-        KeySpec("fn", "fn", inert = true),
-        KeySpec("space", "Space", weight = 5f),
+        KeySpec("fn", "fn"),
+        KeySpec("space", "Space", weight = 4f),
         KeySpec("▲", "ArrowUp"),
     )
 
@@ -98,37 +121,67 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun buildKeyView(key: KeySpec): TextView {
+        val isModifierLook = key.code in setOf("ctrl", "alt", "fn")
+        val restColor = if (isModifierLook) MODIFIER_COLOR else KEY_COLOR
+        val restPressedColor = if (isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
+
         val view = TextView(context).apply {
             text = key.label
             gravity = Gravity.CENTER
-            setTextColor(LABEL_COLOR)
-            setBackgroundColor(NORMAL_COLOR)
             textSize = 14f
             layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-                setMargins(2, 2, 2, 2)
+                setMargins(3, 3, 3, 3)
             }
         }
+        style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
 
         view.setOnClickListener {
             when {
+                key.code == "fn" -> toggleFn(view, restColor, restPressedColor)
                 key.inert -> { /* not implemented yet — see android-app/README.md */ }
-                key.sticky -> toggleModifier(key.code, view)
-                else -> sendKey(key.code)
+                key.sticky -> toggleModifier(key.code, view, restColor, restPressedColor)
+                else -> {
+                    val activeCode = if (fnActive && key.fnCode != null) key.fnCode else key.code
+                    sendKey(activeCode)
+                }
             }
         }
 
-        if (key.sticky) modifierButtons[key.code] = view
+        if (key.sticky) {
+            modifierButtons[key.code] = StickyInfo(view, restColor, restPressedColor)
+        }
+        if (key.fnCode != null) {
+            fnSwappableKeys.add(view to key)
+        }
 
         return view
     }
 
-    private fun toggleModifier(mod: String, view: TextView) {
+    private fun style(view: TextView, restColor: Int, pressedColor: Int, textColor: Int) {
+        view.setTextColor(textColor)
+        val normal = GradientDrawable().apply { setColor(restColor); cornerRadius = keyRadiusPx }
+        val pressed = GradientDrawable().apply { setColor(pressedColor); cornerRadius = keyRadiusPx }
+        view.background = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), pressed)
+            addState(intArrayOf(), normal)
+        }
+    }
+
+    private fun toggleModifier(mod: String, view: TextView, restColor: Int, restPressedColor: Int) {
         if (armedMods.contains(mod)) {
             armedMods.remove(mod)
-            view.setBackgroundColor(NORMAL_COLOR)
+            style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
         } else {
             armedMods.add(mod)
-            view.setBackgroundColor(ARMED_COLOR)
+            style(view, ARMED_COLOR, ARMED_PRESSED_COLOR, TEXT_COLOR_DARK)
+        }
+    }
+
+    private fun toggleFn(view: TextView, restColor: Int, restPressedColor: Int) {
+        fnActive = !fnActive
+        style(view, if (fnActive) ARMED_COLOR else restColor, if (fnActive) ARMED_PRESSED_COLOR else restPressedColor, if (fnActive) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT)
+        for ((btnView, spec) in fnSwappableKeys) {
+            btnView.text = if (fnActive) (spec.fnLabel ?: spec.label) else spec.label
         }
     }
 
@@ -141,8 +194,8 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun clearModifiers() {
         armedMods.clear()
-        for (btn in modifierButtons.values) {
-            btn.setBackgroundColor(NORMAL_COLOR)
+        for (info in modifierButtons.values) {
+            style(info.view, info.restColor, info.restPressedColor, TEXT_COLOR_LIGHT)
         }
     }
 }
