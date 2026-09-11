@@ -18,7 +18,16 @@ def main():
 
     print("Creating a virtual input device...")
     try:
-        ui = UInput({e.EV_REL: [e.REL_X, e.REL_Y]}, name="remote-hid-smoke-test")
+        # A button capability (EV_KEY) has to be declared alongside the
+        # motion axes, even though this test never presses one — without
+        # it, udev/libinput won't classify the device as a mouse at all,
+        # and relative-motion events get silently dropped rather than
+        # moving the cursor. This bit us on the first run.
+        capabilities = {
+            e.EV_REL: [e.REL_X, e.REL_Y],
+            e.EV_KEY: [e.BTN_LEFT],
+        }
+        ui = UInput(capabilities, name="remote-hid-smoke-test")
     except Exception as exc:
         print(f"Could not create the device: {exc}")
         print("Usually means /dev/uinput permissions aren't set up yet — see ../README.md")

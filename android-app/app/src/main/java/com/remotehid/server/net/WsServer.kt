@@ -30,6 +30,23 @@ class WsServer(
     private val onClientDisconnected: (() -> Unit)? = null,
 ) : NanoWSD(port) {
 
+    @Volatile
+    private var activeSocket: WebSocket? = null
+
+    /** Sends a message to the currently connected desktop client, if any. */
+    fun sendToClient(json: String) {
+        val socket = activeSocket
+        if (socket == null) {
+            Log.w(TAG, "no client connected, dropping outbound message")
+            return
+        }
+        try {
+            socket.send(json)
+        } catch (e: IOException) {
+            Log.w(TAG, "failed to send to client: ${e.message}")
+        }
+    }
+
     override fun serveHttp(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         return newFixedLengthResponse("remote-hid server — connect via WebSocket, not HTTP")
     }
@@ -38,11 +55,13 @@ class WsServer(
         return object : WebSocket(handshake) {
 
             override fun onOpen() {
+                activeSocket = this
                 Log.i(TAG, "client connected")
                 onClientConnected?.invoke()
             }
 
             override fun onClose(code: WebSocketFrame.CloseCode?, reason: String?, initiatedByRemote: Boolean) {
+                activeSocket = null
                 Log.i(TAG, "client disconnected: $reason")
                 onClientDisconnected?.invoke()
             }
