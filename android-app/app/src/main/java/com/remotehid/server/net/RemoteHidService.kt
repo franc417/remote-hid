@@ -34,6 +34,17 @@ private const val PORT = 8765
  * directly. The service is independently started (survives unbind),
  * and the Activity binds only while visible, to get a live reference
  * and wire up UI callbacks.
+ *
+ * Uses the "dataSync" foreground service type, not "connectedDevice" —
+ * a real crash on Android 14 corrected this. connectedDevice requires
+ * holding at least one companion permission (Bluetooth, NFC, USB,
+ * CHANGE_WIFI_STATE, etc.) on top of its own permission; this app has
+ * no genuine reason to hold any of those, and Android throws a
+ * SecurityException at startForeground() if you declare the type
+ * without one. dataSync has no such extra requirement, and its actual
+ * description — transferring data between a device and another device
+ * or the cloud over a network — is a more honest match for what this
+ * service does anyway.
  */
 class RemoteHidService : Service() {
 
