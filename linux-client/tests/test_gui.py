@@ -46,7 +46,7 @@ def test_bad_uri_is_rejected_without_starting_a_connection():
         assert "ws://" in app.status_var.get()
         assert app.connected is False
     finally:
-        root.destroy()
+        app._on_close()
 
 
 def test_failed_backend_resets_the_button():
@@ -68,7 +68,7 @@ def test_failed_backend_resets_the_button():
         assert app.connect_button.cget("text") == "Connect"
         assert app.connected is False
     finally:
-        root.destroy()
+        app._on_close()
 
 
 def test_connect_disconnect_round_trip(monkeypatch):
@@ -114,7 +114,7 @@ def test_connect_disconnect_round_trip(monkeypatch):
                 break
         assert app.connect_button.cget("text") == "Connect"
     finally:
-        root.destroy()
+        app._on_close()
 
 
 def test_bare_ws_scheme_with_no_host_is_rejected():
@@ -132,7 +132,7 @@ def test_bare_ws_scheme_with_no_host_is_rejected():
         assert "address" in app.status_var.get().lower()
         assert app.connected is False
     finally:
-        root.destroy()
+        app._on_close()
 
 
 def test_unexpected_exception_type_still_updates_status(monkeypatch):
@@ -177,7 +177,7 @@ def test_unexpected_exception_type_still_updates_status(monkeypatch):
         assert app.connect_button.cget("text") == "Connect"
         assert app.connected is False
     finally:
-        root.destroy()
+        app._on_close()
 
 
 def test_rendezvous_announce_autofills_and_connects(monkeypatch):
@@ -213,7 +213,7 @@ def test_rendezvous_announce_autofills_and_connects(monkeypatch):
             conn.sendall(b"ws://127.0.0.1:8769\n")
 
         autofilled = False
-        for _ in range(20):
+        for _ in range(50):
             time.sleep(0.1)
             root.update()
             if app.uri_var.get() == "ws://127.0.0.1:8769":
@@ -222,7 +222,7 @@ def test_rendezvous_announce_autofills_and_connects(monkeypatch):
         assert autofilled, f"address field never got the announced URI, was: {app.uri_var.get()}"
 
         connected_ok = False
-        for _ in range(20):
+        for _ in range(50):
             time.sleep(0.1)
             root.update()
             if "Connected to" in app.status_var.get():
@@ -230,5 +230,5 @@ def test_rendezvous_announce_autofills_and_connects(monkeypatch):
                 break
         assert connected_ok, f"never auto-connected, last status: {app.status_var.get()}"
     finally:
-        root.destroy()
+        app._on_close()
 

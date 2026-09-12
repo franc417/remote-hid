@@ -132,7 +132,7 @@ class App:
         # version of *this* addition started the rendezvous thread
         # first and hit a real AttributeError race under testing.
         self.status_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
-        self.root.after(100, self._poll_queue)
+        self._poll_job = self.root.after(100, self._poll_queue)
 
         self._show_qr()
         threading.Thread(target=self._run_rendezvous, daemon=True).start()
@@ -152,7 +152,7 @@ class App:
                         self.connect()
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        self._poll_job = self.root.after(100, self._poll_queue)
 
     def _show_qr(self):
         payload = f"{local_ip()}:{RENDEZVOUS_PORT}"
@@ -253,6 +253,18 @@ class App:
     def _on_close(self):
         if self.connected:
             self.disconnect()
+        # Explicitly cancelled rather than relying on destroy() to
+        # implicitly clean it up: a real, reproducible test failure
+        # showed a stale scheduled after() callback from a destroyed
+        # instance colliding with a new one — CPython reused the same
+        # memory address for a new App, and Tkinter's auto-generated
+        # Tcl command name for the callback (tied to that address) then
+        # collided between the two, breaking the new instance's queue
+        # polling ("invalid command name ..._poll_queue"). Only turned
+        # up under pytest running many Tk() instances in one process in
+        # quick succession — unlikely in normal single-instance use,
+        # but a real resource-cleanup gap regardless of how it surfaced.
+        self.root.after_cancel(self._poll_job)
         self.root.destroy()
 
 

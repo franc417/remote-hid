@@ -93,7 +93,27 @@ class RemoteHidService : Service() {
             },
         )
         try {
-            ws.start()
+            // NanoHTTPD's no-arg start() defaults to SOCKET_READ_TIMEOUT =
+            // 5000ms, applied directly to the raw socket the instant it's
+            // accepted — and it silently persists after the WebSocket
+            // upgrade. This is a well-documented NanoHTTPD/NanoWSD issue
+            // specifically for WebSockets (confirmed against the library's
+            // own source and multiple independent bug reports describing
+            // this exact symptom), not something specific to this app.
+            //
+            // The desktop's Python `websockets` library already runs its
+            // own robust keepalive by default — a Ping every 20s, dropping
+            // the connection if no Pong comes back within 20s. That's a
+            // correct, complete liveness mechanism already. The actual bug
+            // was that Android's 5s timeout was *shorter* than the
+            // desktop's already-existing 20s ping interval, so the two were
+            // never compatible — any normal idle gap tripped Android's
+            // timeout long before the desktop's own keepalive ever got a
+            // chance to matter. 60s gives 3x margin over that 20s cadence
+            // for network jitter, while still bounding how long a stuck
+            // connection could linger — no separate ping scheduler needed
+            // here, since the desktop side already does this correctly.
+            ws.start(60_000, false)
             server = ws
             updateNotification("Waiting for a connection")
         } catch (e: Exception) {
