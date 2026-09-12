@@ -1,10 +1,15 @@
 package com.remotehid.server
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,9 +24,8 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.remotehid.server.input.KeyboardView
 import com.remotehid.server.input.TrackpadView
-import com.remotehid.server.net.WsServer
+import com.remotehid.server.net.RemoteHidService
 import com.remotehid.server.protocol.mapToJson
-import java.io.IOException
 import java.net.InetAddress
 import java.net.Socket
 
@@ -29,7 +33,7 @@ private const val PORT = 8765
 
 class MainActivity : AppCompatActivity() {
 
-    private var server: WsServer? = null
+    private var service: RemoteHidService? = null
     private lateinit var statusText: TextView
     private lateinit var trackpad: TrackpadView
     private lateinit var keyboard: KeyboardView
@@ -51,6 +55,23 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort */ }
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val bound = (binder as RemoteHidService.LocalBinder).getService()
+            service = bound
+            bound.onClientConnected = { runOnUiThread { statusText.text = "Client connected" } }
+            bound.onClientDisconnected = { runOnUiThread { statusText.text = statusLine() } }
+            statusText.text = if (bound.isServerRunning) statusLine() else "Server not started"
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            service = null
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -64,11 +85,39 @@ class MainActivity : AppCompatActivity() {
 
         statusText.text = getString(R.string.status_idle)
 
-        trackpad.onEvent = { event -> server?.sendToClient(mapToJson(event)) }
-        keyboard.onEvent = { event -> server?.sendToClient(mapToJson(event)) }
+        trackpad.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
+        keyboard.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
 
         expandButton.setOnClickListener { toggleExpanded() }
         scanButton.setOnClickListener { toggleScan() }
+
+        // Independent of this Activity's lifecycle — this is the fix for
+        // a real bug where backgrounding the app (screen lock, switching
+        // apps) silently killed the connection, because the server used
+        // to be owned directly by onStart()/onStop() here.
+        ContextCompat.startForegroundService(this, Intent(this, RemoteHidService::class.java))
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        bindService(Intent(this, RemoteHidService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Only unbinds — the service was started independently above,
+        // so it (and the connection) keeps running while backgrounded.
+        // We just stop receiving direct callbacks/reference until the
+        // next onStart() rebinds.
+        unbindService(serviceConnection)
+        service = null
     }
 
     private fun toggleExpanded() {
@@ -158,36 +207,6 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { statusText.text = "Pairing failed: ${e.message}" }
             }
         }.start()
-    }
-
-    override fun onStart() {
-        super.onStart()
-
-        val ws = WsServer(
-            port = PORT,
-            onMessage = { _ ->
-                // Messages received here would come from the desktop
-                // client. Nothing to do with them on this end yet — this
-                // device is the server, sending to the desktop, not
-                // receiving input to inject. See WsServer.kt.
-            },
-            onClientConnected = { runOnUiThread { statusText.text = "Client connected" } },
-            onClientDisconnected = { runOnUiThread { statusText.text = statusLine() } },
-        )
-
-        try {
-            ws.start()
-            server = ws
-            statusText.text = statusLine()
-        } catch (e: IOException) {
-            statusText.text = "Failed to start server: ${e.message}"
-        }
-    }
-
-    override fun onStop() {
-        super.onStop()
-        server?.stop()
-        server = null
     }
 
     private fun statusLine(): String {

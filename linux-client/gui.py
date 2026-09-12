@@ -14,6 +14,7 @@ import socket
 import threading
 import tkinter as tk
 from pathlib import Path
+from urllib.parse import urlparse
 
 import qrcode
 from PIL import ImageTk
@@ -56,6 +57,19 @@ def local_ip() -> str:
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def is_valid_ws_uri(uri: str) -> bool:
+    """Checks for an actual host, not just the ws:// prefix.
+
+    Real bug this fixes: the address field defaults to the bare text
+    "ws://" (no host). That starts with "ws://" trivially, so a plain
+    prefix check let it through, and it crashed a background thread
+    with websockets.exceptions.InvalidURI — caught live, from an actual
+    run, not found by inspection.
+    """
+    parsed = urlparse(uri)
+    return parsed.scheme in ("ws", "wss") and bool(parsed.hostname)
 
 
 class App:
@@ -181,8 +195,8 @@ class App:
 
     def connect(self):
         uri = self.uri_var.get().strip()
-        if not (uri.startswith("ws://") or uri.startswith("wss://")):
-            self.status_var.set("Address must start with ws:// or wss://")
+        if not is_valid_ws_uri(uri):
+            self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765")
             return
         save_last_uri(uri)
         self.connected = True
@@ -218,6 +232,20 @@ class App:
             self.status_queue.put(("status", "Disconnected"))
         except OSError as exc:
             self.status_queue.put(("status", f"Could not connect: {exc}"))
+        except Exception as exc:
+            # Deliberately broad: this is the fix for a real, observed
+            # bug. websockets.exceptions.ConnectionClosedError (phone
+            # dropped the connection, e.g. the app got backgrounded)
+            # isn't a CancelledError or an OSError, so it fell through
+            # both specific handlers uncaught. The finally block below
+            # still reset the button correctly either way (finally
+            # always runs) — but the status text was never told the
+            # connection had actually died, so it kept showing stale
+            # "Connected to ..." text while nothing was connected. This
+            # catch-all is what actually fixes that: every failure mode
+            # now updates status to something true, not just the two
+            # anticipated ones.
+            self.status_queue.put(("status", f"Connection lost: {exc}"))
         finally:
             backend.close()
             self.status_queue.put(("reset_button", None))

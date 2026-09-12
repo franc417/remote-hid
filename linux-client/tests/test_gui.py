@@ -117,6 +117,69 @@ def test_connect_disconnect_round_trip(monkeypatch):
         root.destroy()
 
 
+def test_bare_ws_scheme_with_no_host_is_rejected():
+    # Regression test: the address field defaults to bare "ws://" (no
+    # host). That passed the old "starts with ws://" check trivially
+    # and crashed a background thread with InvalidURI under real
+    # testing on an actual machine.
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+        app.uri_var.set("ws://")
+        app.connect()
+        root.update()
+        assert "address" in app.status_var.get().lower()
+        assert app.connected is False
+    finally:
+        root.destroy()
+
+
+def test_unexpected_exception_type_still_updates_status(monkeypatch):
+    # Regression test: a real run produced websockets.exceptions.
+    # ConnectionClosedError (phone dropped the connection mid-session,
+    # e.g. backgrounded). That's neither CancelledError nor OSError, so
+    # it fell through both specific except clauses uncaught. The button
+    # still reset correctly (finally always runs) but the status text
+    # was never told the connection had died, and stayed on stale
+    # "Connected to ..." text. This simulates any such "some other
+    # exception type" failure without needing to reproduce the exact
+    # real-world trigger, since the fix is about the except clause
+    # catching it at all, not about websockets internals specifically.
+    monkeypatch.setattr(gui, "UinputBackend", MockBackend)
+
+    class SomeOtherFailure(Exception):
+        pass
+
+    async def fake_run_client(uri, backend, on_status=None):
+        if on_status:
+            on_status(f"Connected to {uri}")
+        raise SomeOtherFailure("simulated non-OSError, non-CancelledError failure")
+
+    monkeypatch.setattr(gui, "run_client", fake_run_client)
+
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+        app.uri_var.set("ws://127.0.0.1:9")
+        app.connect()
+
+        saw_lost = False
+        for _ in range(20):
+            time.sleep(0.1)
+            root.update()
+            if "Connection lost" in app.status_var.get():
+                saw_lost = True
+                break
+
+        assert saw_lost, f"status never updated after the failure, stayed at: {app.status_var.get()}"
+        assert app.connect_button.cget("text") == "Connect"
+        assert app.connected is False
+    finally:
+        root.destroy()
+
+
 def test_rendezvous_announce_autofills_and_connects(monkeypatch):
     # Simulates a phone that scanned the QR code: connects to the
     # rendezvous port and sends its ws:// address. The app should pick
