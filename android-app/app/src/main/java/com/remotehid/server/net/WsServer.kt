@@ -9,6 +9,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
+import java.util.concurrent.Executors
 
 private const val TAG = "WsServer"
 
@@ -33,18 +34,37 @@ class WsServer(
     @Volatile
     private var activeSocket: WebSocket? = null
 
+    // sendToClient() is called directly from touch/click UI callbacks
+    // (TrackpadView, KeyboardView), so it runs on the main thread by
+    // default. socket.send() below does a blocking network write —
+    // doing that on the main thread throws NetworkOnMainThreadException
+    // and crashes the app on literally the first touch. Confirmed from
+    // a real crash report, not found by inspection. A single-thread
+    // executor moves the actual write off the main thread while still
+    // processing sends strictly in order (important: out-of-order
+    // cursor deltas would be worse than a dropped one), without paying
+    // thread-creation overhead on every touch-move event.
+    private val sendExecutor = Executors.newSingleThreadExecutor()
+
     /** Sends a message to the currently connected desktop client, if any. */
     fun sendToClient(json: String) {
-        val socket = activeSocket
-        if (socket == null) {
-            Log.w(TAG, "no client connected, dropping outbound message")
-            return
+        sendExecutor.execute {
+            val socket = activeSocket
+            if (socket == null) {
+                Log.w(TAG, "no client connected, dropping outbound message")
+                return@execute
+            }
+            try {
+                socket.send(json)
+            } catch (e: IOException) {
+                Log.w(TAG, "failed to send to client: ${e.message}")
+            }
         }
-        try {
-            socket.send(json)
-        } catch (e: IOException) {
-            Log.w(TAG, "failed to send to client: ${e.message}")
-        }
+    }
+
+    override fun stop() {
+        super.stop()
+        sendExecutor.shutdown()
     }
 
     override fun serveHttp(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
