@@ -10,5 +10,10 @@ evdev>=1.7.1
 # without it.
 # tkinter
 
+# QR pairing (also gui.py) — desktop generates a QR code the phone
+# scans. Debian/Ubuntu/Mint: python3-qrcode, python3-pil, python3-pil.imagetk
+# qrcode
+# Pillow
+
 # Dev/test only
 pytest>=8.0

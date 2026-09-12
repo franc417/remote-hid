@@ -40,5 +40,14 @@ dependencies {
     // established for exactly this use case.
     implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
 
+    // QR scanning for pairing. This is the least-verified dependency
+    // set in the project — see android-app/README.md.
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.camera:camera-mlkit-vision:1.4.2")
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
     testImplementation("junit:junit:4.13.2")
 }

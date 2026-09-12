@@ -21,6 +21,16 @@
             android:textSize="13sp" />
 
         <TextView
+            android:id="@+id/scanButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="scan"
+            android:textColor="#FFFFFF"
+            android:padding="8dp"
+            android:layout_marginEnd="8dp"
+            android:background="#1C1C1C" />
+
+        <TextView
             android:id="@+id/expandButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -38,10 +48,16 @@
         android:layout_weight="1"
         android:background="#0D0D0D" />
 
+    <androidx.camera.view.PreviewView
+        android:id="@+id/qrPreview"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:visibility="gone" />
+
     <com.remotehid.server.input.KeyboardView
         android:id="@+id/keyboard"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="wrap_content" />
 
 </LinearLayout>

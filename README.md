@@ -47,11 +47,12 @@ That part needs verification on your actual machine.
 ### Setup (Debian/Ubuntu/Mint)
 
 ```bash
-sudo apt install python3-evdev python3-websockets python3-tk
+sudo apt install python3-evdev python3-websockets python3-tk python3-qrcode python3-pil python3-pil.imagetk
 ```
 
-`python3-tk` is only needed for the GUI app (`gui.py`) — skip it if
-you're only ever going to use the `client.py` command-line form.
+`python3-tk`, `python3-qrcode`, and the two `python3-pil*` packages are
+only needed for the GUI app (`gui.py`) — skip them if you're only ever
+going to use the `client.py` command-line form.
 
 ### Setup (Arch)
 
@@ -94,12 +95,14 @@ If your cursor traces a small square on screen, `uinput` is working.
 python3 gui.py
 ```
 
-A small window: type the phone's `ws://<ip>:<port>` (shown on the
-phone's screen once the Android app is running), hit Connect. It
-remembers the address for next time, so after the first run you won't
-need to type it again. `branding/generate-icons.sh
---install-desktop-icon` installs this as a real launcher entry in your
-application menu, icon included.
+A window opens with two ways to connect: type the phone's
+`ws://<ip>:<port>` directly, or scan the QR code shown in the window
+with the phone's camera (Settings → Scan on the phone) — the phone
+sends its address back automatically over a small one-shot local
+handshake, and the app fills in the field and connects for you. Either
+way, it remembers the address for next time.
+`branding/generate-icons.sh --install-desktop-icon` installs this as a
+real launcher entry in your application menu, icon included.
 
 ### Run — as a command (for scripting/debugging)
 

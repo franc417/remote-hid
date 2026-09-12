@@ -18,6 +18,7 @@ private val ARMED_COLOR = Color.parseColor("#E8E8E8")
 private val ARMED_PRESSED_COLOR = Color.parseColor("#D0D0D0")
 private const val TEXT_COLOR_LIGHT = Color.WHITE
 private const val TEXT_COLOR_DARK = Color.BLACK
+private const val ROW_HEIGHT_DP = 42f
 
 private data class KeySpec(
     val label: String,
@@ -30,14 +31,20 @@ private data class KeySpec(
 )
 
 /**
- * Full on-screen keyboard: number row, three letter rows, a modifier
- * dock, and an arrow cluster — matching the split-view design mockups.
+ * Full on-screen keyboard: number row (with F1-F12 under Fn), three
+ * letter rows, a modifier dock, and an arrow cluster — matching the
+ * split-view design mockups.
  *
  * Ctrl/Alt/Shift are sticky: tap arms it (highlighted white/black), the
  * armed set is attached to the next normal key's "mods", then cleared.
- * Fn is a persistent toggle: swaps the number row between digits and
- * F1-F10 until tapped again. 123 is still inert — see
+ * Fn is a persistent toggle: swaps the number row between digits/-/=
+ * and F1-F12 until tapped again. 123 is still inert — see
  * android-app/README.md for what's not wired up yet.
+ *
+ * Rows are a fixed height (not stretched to fill whatever space the
+ * parent gives them) so keys stay close to square instead of tall
+ * rectangles — see activity_main.xml, where this view is wrap_content
+ * height rather than weighted.
  *
  * Emits key events as protocol-shaped maps via onEvent — this view
  * knows nothing about WebSockets or JSON.
@@ -49,7 +56,8 @@ class KeyboardView @JvmOverloads constructor(
 
     var onEvent: ((Map<String, Any?>) -> Unit)? = null
 
-    private val keyRadiusPx = 10f * resources.displayMetrics.density
+    private val keyRadiusPx = 8f * resources.displayMetrics.density
+    private val rowHeightPx = (ROW_HEIGHT_DP * resources.displayMetrics.density).toInt()
 
     private val armedMods = mutableSetOf<String>()
     private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
@@ -81,6 +89,8 @@ class KeyboardView @JvmOverloads constructor(
         KeySpec("8", "Digit8", fnLabel = "F8", fnCode = "F8"),
         KeySpec("9", "Digit9", fnLabel = "F9", fnCode = "F9"),
         KeySpec("0", "Digit0", fnLabel = "F10", fnCode = "F10"),
+        KeySpec("-", "Minus", fnLabel = "F11", fnCode = "F11"),
+        KeySpec("=", "Equal", fnLabel = "F12", fnCode = "F12"),
     )
 
     private fun qwertyRow() = "qwertyuiop".map { KeySpec(it.toString(), "Key${it.uppercaseChar()}") }
@@ -94,10 +104,11 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun modDockRow() = listOf(
         KeySpec("esc", "Escape"),
+        KeySpec("prtsc", "PrintScreen"),
         KeySpec("ctrl", "ctrl", sticky = true),
         KeySpec("alt", "alt", sticky = true),
         KeySpec("fn", "fn"),
-        KeySpec("space", "Space", weight = 4f),
+        KeySpec("space", "Space", weight = 3f),
         KeySpec("▲", "ArrowUp"),
     )
 
@@ -112,7 +123,7 @@ class KeyboardView @JvmOverloads constructor(
     private fun addRow(keys: List<KeySpec>) {
         val row = LinearLayout(context).apply {
             orientation = HORIZONTAL
-            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f)
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, rowHeightPx)
         }
         for (key in keys) {
             row.addView(buildKeyView(key))
@@ -128,9 +139,9 @@ class KeyboardView @JvmOverloads constructor(
         val view = TextView(context).apply {
             text = key.label
             gravity = Gravity.CENTER
-            textSize = 14f
+            textSize = 13f
             layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-                setMargins(3, 3, 3, 3)
+                setMargins(2, 2, 2, 2)
             }
         }
         style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
@@ -179,7 +190,12 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun toggleFn(view: TextView, restColor: Int, restPressedColor: Int) {
         fnActive = !fnActive
-        style(view, if (fnActive) ARMED_COLOR else restColor, if (fnActive) ARMED_PRESSED_COLOR else restPressedColor, if (fnActive) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT)
+        style(
+            view,
+            if (fnActive) ARMED_COLOR else restColor,
+            if (fnActive) ARMED_PRESSED_COLOR else restPressedColor,
+            if (fnActive) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT,
+        )
         for ((btnView, spec) in fnSwappableKeys) {
             btnView.text = if (fnActive) (spec.fnLabel ?: spec.label) else spec.label
         }

@@ -9,6 +9,7 @@ Headless: xvfb-run -a python3 -m pytest tests/test_gui.py -v
 
 import asyncio
 import os
+import socket
 import sys
 import threading
 import time
@@ -114,3 +115,57 @@ def test_connect_disconnect_round_trip(monkeypatch):
         assert app.connect_button.cget("text") == "Connect"
     finally:
         root.destroy()
+
+
+def test_rendezvous_announce_autofills_and_connects(monkeypatch):
+    # Simulates a phone that scanned the QR code: connects to the
+    # rendezvous port and sends its ws:// address. The app should pick
+    # this up, fill the address field, and connect automatically —
+    # without the connect() call itself needing real uinput.
+    monkeypatch.setattr(gui, "UinputBackend", MockBackend)
+    monkeypatch.setattr(gui, "RENDEZVOUS_PORT", 8768)
+
+    import websockets
+
+    async def fake_phone_server(websocket):
+        await websocket.wait_closed()
+
+    async def serve_forever():
+        async with websockets.serve(fake_phone_server, "127.0.0.1", 8769):
+            await asyncio.Event().wait()
+
+    threading.Thread(target=lambda: asyncio.run(serve_forever()), daemon=True).start()
+    time.sleep(0.3)
+
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+
+        # Give the rendezvous listener thread a moment to actually bind
+        # before a fake "phone" tries to connect to it.
+        time.sleep(0.3)
+
+        with socket.create_connection(("127.0.0.1", 8768), timeout=2) as conn:
+            conn.sendall(b"ws://127.0.0.1:8769\n")
+
+        autofilled = False
+        for _ in range(20):
+            time.sleep(0.1)
+            root.update()
+            if app.uri_var.get() == "ws://127.0.0.1:8769":
+                autofilled = True
+                break
+        assert autofilled, f"address field never got the announced URI, was: {app.uri_var.get()}"
+
+        connected_ok = False
+        for _ in range(20):
+            time.sleep(0.1)
+            root.update()
+            if "Connected to" in app.status_var.get():
+                connected_ok = True
+                break
+        assert connected_ok, f"never auto-connected, last status: {app.status_var.get()}"
+    finally:
+        root.destroy()
+

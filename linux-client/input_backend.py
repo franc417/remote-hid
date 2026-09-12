@@ -68,6 +68,9 @@ KEY_MAP.update({
     "ArrowRight": "KEY_RIGHT",
     "Comma": "KEY_COMMA",
     "Period": "KEY_DOT",
+    "Minus": "KEY_MINUS",
+    "Equal": "KEY_EQUAL",
+    "PrintScreen": "KEY_SYSRQ",
 })
 for _n in range(1, 13):
     KEY_MAP[f"F{_n}"] = f"KEY_F{_n}"

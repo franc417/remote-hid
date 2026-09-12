@@ -16,16 +16,18 @@ import kotlin.math.sin
 private const val TAP_MOVE_THRESHOLD_PX = 12f
 private const val TAP_MAX_DURATION_MS = 200L
 private const val SCROLL_DIVISOR = 4f
-private const val HEX_FADE_MS = 450L
-private const val HEX_RADIUS_PX = 26f
-private const val HEX_MAX_POINTS = 30
-private const val HEX_MIN_SPACING_PX = 18f
+private const val HEX_COUNT = 3
+private const val HEX_RADIUS_PX = 16f
+private const val ORBIT_RADIUS_PX = 34f
+private const val ORBIT_DEGREES_PER_MS = 0.09f
+private const val RELEASE_FADE_MS = 250L
 
 /**
  * Trackpad surface: one-finger drag moves the cursor, a short one-finger
- * tap clicks, two-finger drag scrolls. Also draws a fading trail of
- * glowing hexagons following the touch point — purely visual, doesn't
- * affect what gets sent over the wire.
+ * tap clicks, two-finger drag scrolls. While touched, draws a small
+ * cluster of glowing hexagons orbiting the live touch point (not a
+ * historical trail) — they move together with your finger and fade out
+ * over ~250ms after release.
  *
  * Emits already protocol-shaped messages (as Map<String, Any?>) via
  * onEvent — this view knows nothing about WebSockets or JSON.
@@ -49,18 +51,20 @@ class TrackpadView @JvmOverloads constructor(
     private var totalMovement = 0f
     private var usedMultitouch = false
 
-    private data class HexPoint(val x: Float, val y: Float, val createdAt: Long)
-    private val hexPoints = ArrayDeque<HexPoint>()
+    private var touching = false
+    private var touchX = 0f
+    private var touchY = 0f
+    private var releasedAt = 0L
 
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 6f
+        strokeWidth = 5f
         color = Color.WHITE
-        maskFilter = BlurMaskFilter(18f, BlurMaskFilter.Blur.NORMAL)
+        maskFilter = BlurMaskFilter(14f, BlurMaskFilter.Blur.NORMAL)
     }
     private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 3f
+        strokeWidth = 2.5f
         color = Color.WHITE
     }
 
@@ -79,7 +83,10 @@ class TrackpadView @JvmOverloads constructor(
                 downTime = event.eventTime
                 totalMovement = 0f
                 usedMultitouch = false
-                addHexPoint(event.x, event.y)
+                touching = true
+                touchX = event.x
+                touchY = event.y
+                postInvalidateOnAnimation()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -97,6 +104,8 @@ class TrackpadView @JvmOverloads constructor(
                         onEvent?.invoke(mapOf("t" to "scroll", "dy" to (dy / SCROLL_DIVISOR)))
                     }
                     lastTwoFingerY = y
+                    touchX = averageX(event)
+                    touchY = y
                 } else {
                     val dx = event.x - lastX
                     val dy = event.y - lastY
@@ -106,18 +115,31 @@ class TrackpadView @JvmOverloads constructor(
                     }
                     lastX = event.x
                     lastY = event.y
-                    addHexPoint(event.x, event.y)
+                    touchX = event.x
+                    touchY = event.y
                 }
+                postInvalidateOnAnimation()
             }
 
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val duration = event.eventTime - downTime
-                if (!usedMultitouch && totalMovement < TAP_MOVE_THRESHOLD_PX && duration < TAP_MAX_DURATION_MS) {
+                if (event.actionMasked == MotionEvent.ACTION_UP &&
+                    !usedMultitouch && totalMovement < TAP_MOVE_THRESHOLD_PX && duration < TAP_MAX_DURATION_MS
+                ) {
                     onEvent?.invoke(mapOf("t" to "click", "button" to "left"))
                 }
+                touching = false
+                releasedAt = System.currentTimeMillis()
+                postInvalidateOnAnimation()
             }
         }
         return true
+    }
+
+    private fun averageX(event: MotionEvent): Float {
+        var sum = 0f
+        for (i in 0 until event.pointerCount) sum += event.getX(i)
+        return sum / event.pointerCount
     }
 
     private fun averageY(event: MotionEvent): Float {
@@ -126,37 +148,30 @@ class TrackpadView @JvmOverloads constructor(
         return sum / event.pointerCount
     }
 
-    private fun addHexPoint(x: Float, y: Float) {
-        val last = hexPoints.lastOrNull()
-        if (last != null) {
-            val dx = x - last.x
-            val dy = y - last.y
-            if (dx * dx + dy * dy < HEX_MIN_SPACING_PX * HEX_MIN_SPACING_PX) return
-        }
-        hexPoints.addLast(HexPoint(x, y, System.currentTimeMillis()))
-        if (hexPoints.size > HEX_MAX_POINTS) hexPoints.removeFirst()
-        postInvalidateOnAnimation()
-    }
-
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val now = System.currentTimeMillis()
-        val iterator = hexPoints.iterator()
-        while (iterator.hasNext()) {
-            val point = iterator.next()
-            val age = now - point.createdAt
-            if (age >= HEX_FADE_MS) {
-                iterator.remove()
-                continue
-            }
-            val fraction = 1f - (age.toFloat() / HEX_FADE_MS)
-            val path = hexagonPath(point.x, point.y, HEX_RADIUS_PX * (0.7f + 0.3f * fraction))
-            glowPaint.alpha = (200 * fraction).toInt()
-            corePaint.alpha = (255 * fraction).toInt()
+
+        val alphaFraction = if (touching) {
+            1f
+        } else {
+            val sinceRelease = System.currentTimeMillis() - releasedAt
+            if (sinceRelease >= RELEASE_FADE_MS) 0f else 1f - (sinceRelease.toFloat() / RELEASE_FADE_MS)
+        }
+        if (alphaFraction <= 0f) return
+
+        val rotation = (System.currentTimeMillis() % 100000L) * ORBIT_DEGREES_PER_MS
+        for (i in 0 until HEX_COUNT) {
+            val angle = Math.toRadians((rotation + i * (360f / HEX_COUNT)).toDouble())
+            val cx = touchX + ORBIT_RADIUS_PX * cos(angle).toFloat()
+            val cy = touchY + ORBIT_RADIUS_PX * sin(angle).toFloat()
+            val path = hexagonPath(cx, cy, HEX_RADIUS_PX)
+            glowPaint.alpha = (180 * alphaFraction).toInt()
+            corePaint.alpha = (255 * alphaFraction).toInt()
             canvas.drawPath(path, glowPaint)
             canvas.drawPath(path, corePaint)
         }
-        if (hexPoints.isNotEmpty()) {
+
+        if (touching || alphaFraction > 0f) {
             postInvalidateOnAnimation()
         }
     }

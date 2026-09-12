@@ -10,14 +10,19 @@ scripting or debugging.
 import asyncio
 import json
 import queue
+import socket
 import threading
 import tkinter as tk
 from pathlib import Path
+
+import qrcode
+from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
+RENDEZVOUS_PORT = 8766
 
 BG = "#000000"
 SURFACE = "#1E1E1E"
@@ -38,6 +43,21 @@ def save_last_uri(uri: str) -> None:
     CONFIG_PATH.write_text(json.dumps({"uri": uri}))
 
 
+def local_ip() -> str:
+    """Best-effort guess at this machine's LAN IP, for the QR code.
+    Doesn't actually send anything — connect() on a UDP socket just
+    picks the outbound interface so we can read its address back.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -48,7 +68,7 @@ class App:
 
         root.title("remote-hid")
         root.configure(bg=BG)
-        root.geometry("380x180")
+        root.geometry("380x420")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         tk.Label(root, text="Phone address", bg=BG, fg=FG).pack(pady=(18, 4))
@@ -80,16 +100,28 @@ class App:
         )
         self.connect_button.pack(pady=6)
 
-        # The background thread never touches Tkinter directly — it only
-        # ever puts messages on this queue. Only _poll_queue, which is
+        tk.Label(root, text="or scan with the phone", bg=BG, fg=MUTED).pack(pady=(14, 4))
+        self.qr_label = tk.Label(root, bg=BG)
+        self.qr_label.pack(pady=4)
+        self._qr_photo = None  # kept alive here — Tkinter drops images with no live reference
+
+        # The background threads (rendezvous listener, and later the
+        # connection thread) never touch Tkinter directly — they only
+        # ever put messages on this queue. Only _poll_queue, which is
         # scheduled from the main thread on itself, turns messages into
         # actual widget updates. Calling Tkinter methods from another
         # thread is documented as unsafe; an earlier version of this
-        # file called root.after() directly from the worker thread and
-        # it threw RuntimeError: main thread is not in main loop under
-        # real testing — this queue is the fix, not a nicety.
+        # file called root.after() directly from a worker thread and it
+        # threw RuntimeError: main thread is not in main loop under real
+        # testing — this queue is the fix, not a nicety. Must exist
+        # before any thread that might use it starts — an earlier
+        # version of *this* addition started the rendezvous thread
+        # first and hit a real AttributeError race under testing.
         self.status_queue: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self.root.after(100, self._poll_queue)
+
+        self._show_qr()
+        threading.Thread(target=self._run_rendezvous, daemon=True).start()
 
     def _poll_queue(self):
         try:
@@ -100,9 +132,46 @@ class App:
                 elif kind == "reset_button":
                     self.connected = False
                     self.connect_button.config(text="Connect")
+                elif kind == "announced_uri":
+                    self.uri_var.set(payload)
+                    if not self.connected:
+                        self.connect()
         except queue.Empty:
             pass
         self.root.after(100, self._poll_queue)
+
+    def _show_qr(self):
+        payload = f"{local_ip()}:{RENDEZVOUS_PORT}"
+        img = qrcode.make(payload, border=2).resize((180, 180))
+        self._qr_photo = ImageTk.PhotoImage(img)
+        self.qr_label.config(image=self._qr_photo)
+
+    def _run_rendezvous(self):
+        """Listens for a phone announcing its address after scanning
+        this window's QR code, then auto-fills and auto-connects.
+        Runs for the app's lifetime — accepts announces one at a time,
+        forever, so re-scanning later (e.g. after a disconnect) works
+        too. Only ever touches the queue, never Tkinter directly, same
+        rule as _run().
+        """
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("0.0.0.0", RENDEZVOUS_PORT))
+            srv.listen(1)
+        except OSError as exc:
+            self.status_queue.put(("status", f"Rendezvous listener failed: {exc}"))
+            return
+
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            with conn:
+                data = conn.recv(200).decode("utf-8", errors="replace").strip()
+            if data.startswith("ws://") or data.startswith("wss://"):
+                self.status_queue.put(("announced_uri", data))
 
     def toggle(self):
         if self.connected:
