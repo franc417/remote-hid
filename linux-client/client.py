@@ -12,15 +12,15 @@ from handler import handle_message
 
 
 async def run_client(uri: str, backend, on_status=None) -> None:
-    # Explicit rather than relying on the library's defaults (which
-    # happen to also be 20/20 today, but defaults can change): this
-    # value has to stay well under the Android side's socket read
-    # timeout (60s, in RemoteHidService.kt) for the built-in keepalive
-    # to actually do its job. A real bug taught us this the hard way —
-    # Android's timeout used to be a default 5s, shorter than even the
-    # library's own 20s ping interval, so the two were never compatible
-    # regardless of what either side's actual value was.
-    async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+    # ping_interval stays short (20s) so pings keep flowing regularly —
+    # good for NAT/firewall keepalive and for genuinely detecting a
+    # dead connection reasonably fast. ping_timeout is set much longer
+    # (10 min): this is how long the app tolerates sitting idle (phone
+    # set down, no touches) without deciding the connection is dead.
+    # Needs to stay under the Android side's own socket read timeout
+    # (RemoteHidService.kt) or that becomes the real limiting factor
+    # regardless of this value — learned that the hard way already.
+    async with websockets.connect(uri, ping_interval=20, ping_timeout=600) as ws:
         print(f"[client] connected to {uri}")
         if on_status:
             on_status(f"Connected to {uri}")

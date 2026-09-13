@@ -112,8 +112,11 @@ class RemoteHidService : Service() {
             // chance to matter. 60s gives 3x margin over that 20s cadence
             // for network jitter, while still bounding how long a stuck
             // connection could linger — no separate ping scheduler needed
-            // here, since the desktop side already does this correctly.
-            ws.start(60_000, false)
+            // 10 minutes, with margin over the desktop's own 10-minute
+            // ping_timeout (client.py) — that value is the one meant to
+            // actually govern idle tolerance; this just needs to not be
+            // the shorter, limiting one, same lesson as before.
+            ws.start(660_000, false)
             server = ws
             updateNotification("Waiting for a connection")
         } catch (e: Exception) {

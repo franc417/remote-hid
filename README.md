@@ -57,7 +57,19 @@ going to use the `client.py` command-line form.
 ### Setup (Arch)
 
 ```bash
-sudo pacman -S python-evdev python-websockets tk
+sudo pacman -S python-evdev python-websockets tk python-qrcode python-pillow
+```
+
+### Setup (Fedora)
+
+```bash
+sudo dnf install python3-evdev python3-websockets python3-tkinter python3-qrcode python3-pillow
+```
+
+### Setup (openSUSE)
+
+```bash
+sudo zypper install python3-evdev python3-websockets python3-tk python3-qrcode python3-Pillow
 ```
 
 ### uinput permissions (all distros, systemd-based)

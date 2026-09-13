@@ -18,7 +18,8 @@ private val ARMED_COLOR = Color.parseColor("#E8E8E8")
 private val ARMED_PRESSED_COLOR = Color.parseColor("#D0D0D0")
 private const val TEXT_COLOR_LIGHT = Color.WHITE
 private const val TEXT_COLOR_DARK = Color.BLACK
-private const val ROW_HEIGHT_DP = 42f
+private const val ROW_HEIGHT_DP = 56f
+private const val KEY_TEXT_SP = 17f
 
 private data class KeySpec(
     val label: String,
@@ -32,19 +33,19 @@ private data class KeySpec(
 
 /**
  * Full on-screen keyboard: number row (with F1-F12 under Fn), three
- * letter rows, a modifier dock, and an arrow cluster — matching the
- * split-view design mockups.
+ * letter rows, a modifier dock (including a standalone Windows/Super
+ * key), and an arrow cluster that doubles as Home/End/PageUp/PageDown
+ * under Fn — matching how a real laptop keyboard's Fn row works.
  *
  * Ctrl/Alt/Shift are sticky: tap arms it (highlighted white/black), the
  * armed set is attached to the next normal key's "mods", then cleared.
- * Fn is a persistent toggle: swaps the number row between digits/-/=
- * and F1-F12 until tapped again. 123 is still inert — see
- * android-app/README.md for what's not wired up yet.
+ * Fn is a persistent toggle, not sticky-per-keypress: swaps the number
+ * row and arrow cluster to their secondary functions until tapped
+ * again. 123 is still inert — see android-app/README.md.
  *
- * Rows are a fixed height (not stretched to fill whatever space the
- * parent gives them) so keys stay close to square instead of tall
- * rectangles — see activity_main.xml, where this view is wrap_content
- * height rather than weighted.
+ * Row height is fixed (not stretched to fill whatever space the parent
+ * gives it) — see activity_main.xml, where this view is wrap_content
+ * height and the trackpad absorbs the remaining space.
  *
  * Emits key events as protocol-shaped maps via onEvent — this view
  * knows nothing about WebSockets or JSON.
@@ -105,18 +106,19 @@ class KeyboardView @JvmOverloads constructor(
     private fun modDockRow() = listOf(
         KeySpec("esc", "Escape"),
         KeySpec("prtsc", "PrintScreen"),
+        KeySpec("win", "Meta"),
         KeySpec("ctrl", "ctrl", sticky = true),
         KeySpec("alt", "alt", sticky = true),
         KeySpec("fn", "fn"),
         KeySpec("space", "Space", weight = 3f),
-        KeySpec("▲", "ArrowUp"),
+        KeySpec("▲", "ArrowUp", fnLabel = "PgUp", fnCode = "PageUp"),
     )
 
     private fun bottomRow() = listOf(
         KeySpec("123", "123", inert = true),
-        KeySpec("◀", "ArrowLeft"),
-        KeySpec("▼", "ArrowDown"),
-        KeySpec("▶", "ArrowRight"),
+        KeySpec("◀", "ArrowLeft", fnLabel = "Home", fnCode = "Home"),
+        KeySpec("▼", "ArrowDown", fnLabel = "PgDn", fnCode = "PageDown"),
+        KeySpec("▶", "ArrowRight", fnLabel = "End", fnCode = "End"),
         KeySpec("enter", "Enter", weight = 2f),
     )
 
@@ -132,16 +134,16 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun buildKeyView(key: KeySpec): TextView {
-        val isModifierLook = key.code in setOf("ctrl", "alt", "fn")
+        val isModifierLook = key.code in setOf("ctrl", "alt", "fn", "Meta")
         val restColor = if (isModifierLook) MODIFIER_COLOR else KEY_COLOR
         val restPressedColor = if (isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
         val view = TextView(context).apply {
             text = key.label
             gravity = Gravity.CENTER
-            textSize = 13f
+            textSize = KEY_TEXT_SP
             layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-                setMargins(2, 2, 2, 2)
+                setMargins(3, 3, 3, 3)
             }
         }
         style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)

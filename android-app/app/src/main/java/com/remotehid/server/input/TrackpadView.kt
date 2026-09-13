@@ -21,21 +21,45 @@ private const val HEX_RADIUS_PX = 16f
 private const val ORBIT_RADIUS_PX = 34f
 private const val ORBIT_DEGREES_PER_MS = 0.09f
 private const val RELEASE_FADE_MS = 250L
+private const val DOUBLE_TAP_WINDOW_MS = 300L
+private const val DOUBLE_TAP_DISTANCE_PX = 50f
+private const val THREE_FINGER_THRESHOLD_PX = 70f
 
 /**
- * Trackpad surface: one-finger drag moves the cursor, a short one-finger
- * tap clicks, two-finger drag scrolls. While touched, draws a small
- * cluster of glowing hexagons orbiting the live touch point (not a
- * historical trail) — they move together with your finger and fade out
- * over ~250ms after release.
+ * Trackpad surface. Gestures:
+ * - One-finger drag: move the cursor
+ * - One-finger tap: click
+ * - One-finger tap, then a second tap-and-hold-drag at roughly the same
+ *   spot within 300ms: click-and-drag (press, drag, release) — the
+ *   standard trackpad gesture for text selection and drag-and-drop.
+ *   The first tap still sends a normal click; the second touch's
+ *   down/move/up becomes click(down)/move.../click(up), which is
+ *   exactly the raw sequence a real double-click-drag produces, so the
+ *   receiving OS's own text-selection heuristics do the rest.
+ * - Two-finger drag: scroll
+ * - Three-finger horizontal swipe: switch workspace (Ctrl+Alt+Left/
+ *   Right) — confirmed as the default binding across GNOME, Cinnamon
+ *   (Linux Mint's own default desktop), MATE, and XFCE, not a
+ *   GNOME-only convention. KDE Plasma and tiling window managers
+ *   (i3, sway) often bind this differently, so it may need adjusting
+ *   there.
+ * - Three-finger vertical swipe: swipe up sends Super/Meta alone
+ *   (opens an app overview/launcher on most desktop environments,
+ *   though the exact resulting UI differs by DE); swipe down sends
+ *   Escape (back/close). This vertical mapping is more of an
+ *   assumption than the horizontal one — easy to change if it's not
+ *   the right direction.
+ *
+ * Also draws a small cluster of glowing hexagons orbiting the live
+ * touch point — purely visual, doesn't affect what gets sent.
  *
  * Emits already protocol-shaped messages (as Map<String, Any?>) via
  * onEvent — this view knows nothing about WebSockets or JSON.
  *
- * Known simplification: click-and-drag isn't implemented — only click
- * as a single down+up pair. The glow animation and gesture handling are
- * both untested beyond compiling; touch feel and blur rendering can't
- * be verified without a real touchscreen.
+ * Every gesture above is untested beyond compiling — touch feel,
+ * timing thresholds, and whether three fingers register cleanly as a
+ * single gesture rather than fighting the one/two-finger paths can
+ * only be judged on a real touchscreen.
  */
 class TrackpadView @JvmOverloads constructor(
     context: Context,
@@ -50,6 +74,16 @@ class TrackpadView @JvmOverloads constructor(
     private var downTime = 0L
     private var totalMovement = 0f
     private var usedMultitouch = false
+
+    private var lastReleaseTime = 0L
+    private var lastReleaseX = 0f
+    private var lastReleaseY = 0f
+    private var dragArmed = false
+    private var dragActive = false
+
+    private var threeFingerStartX = 0f
+    private var threeFingerStartY = 0f
+    private var threeFingerTriggered = false
 
     private var touching = false
     private var touchX = 0f
@@ -69,9 +103,6 @@ class TrackpadView @JvmOverloads constructor(
     }
 
     init {
-        // BlurMaskFilter needs a software-rendered layer to reliably
-        // show the glow — hardware-accelerated canvas support for it
-        // is inconsistent across devices/API levels.
         setLayerType(LAYER_TYPE_SOFTWARE, null)
     }
 
@@ -86,54 +117,112 @@ class TrackpadView @JvmOverloads constructor(
                 touching = true
                 touchX = event.x
                 touchY = event.y
+
+                val dt = event.eventTime - lastReleaseTime
+                val ddx = event.x - lastReleaseX
+                val ddy = event.y - lastReleaseY
+                dragArmed = dt in 0..DOUBLE_TAP_WINDOW_MS &&
+                    (ddx * ddx + ddy * ddy) < DOUBLE_TAP_DISTANCE_PX * DOUBLE_TAP_DISTANCE_PX
+                dragActive = false
+
                 postInvalidateOnAnimation()
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
                 usedMultitouch = true
+                dragArmed = false
                 if (event.pointerCount == 2) {
                     lastTwoFingerY = averageY(event)
+                } else if (event.pointerCount == 3) {
+                    threeFingerStartX = averageX(event)
+                    threeFingerStartY = averageY(event)
+                    threeFingerTriggered = false
                 }
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (event.pointerCount >= 2) {
-                    val y = averageY(event)
-                    val dy = y - lastTwoFingerY
-                    if (dy != 0f) {
-                        onEvent?.invoke(mapOf("t" to "scroll", "dy" to (dy / SCROLL_DIVISOR)))
+                when (event.pointerCount) {
+                    3 -> handleThreeFingerSwipe(event)
+                    2 -> {
+                        val y = averageY(event)
+                        val dy = y - lastTwoFingerY
+                        if (dy != 0f) {
+                            onEvent?.invoke(mapOf("t" to "scroll", "dy" to (dy / SCROLL_DIVISOR)))
+                        }
+                        lastTwoFingerY = y
+                        touchX = averageX(event)
+                        touchY = y
                     }
-                    lastTwoFingerY = y
-                    touchX = averageX(event)
-                    touchY = y
-                } else {
-                    val dx = event.x - lastX
-                    val dy = event.y - lastY
-                    totalMovement += abs(dx) + abs(dy)
-                    if (dx != 0f || dy != 0f) {
-                        onEvent?.invoke(mapOf("t" to "move", "dx" to dx, "dy" to dy))
+                    else -> {
+                        val dx = event.x - lastX
+                        val dy = event.y - lastY
+                        totalMovement += abs(dx) + abs(dy)
+
+                        if (dragArmed && !dragActive && totalMovement > TAP_MOVE_THRESHOLD_PX) {
+                            dragActive = true
+                            onEvent?.invoke(mapOf("t" to "click", "button" to "left", "action" to "down"))
+                        }
+
+                        if (dx != 0f || dy != 0f) {
+                            onEvent?.invoke(mapOf("t" to "move", "dx" to dx, "dy" to dy))
+                        }
+                        lastX = event.x
+                        lastY = event.y
+                        touchX = event.x
+                        touchY = event.y
                     }
-                    lastX = event.x
-                    lastY = event.y
-                    touchX = event.x
-                    touchY = event.y
                 }
                 postInvalidateOnAnimation()
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val duration = event.eventTime - downTime
-                if (event.actionMasked == MotionEvent.ACTION_UP &&
+                if (dragActive) {
+                    onEvent?.invoke(mapOf("t" to "click", "button" to "left", "action" to "up"))
+                } else if (event.actionMasked == MotionEvent.ACTION_UP &&
                     !usedMultitouch && totalMovement < TAP_MOVE_THRESHOLD_PX && duration < TAP_MAX_DURATION_MS
                 ) {
                     onEvent?.invoke(mapOf("t" to "click", "button" to "left"))
                 }
+                if (!usedMultitouch) {
+                    lastReleaseTime = event.eventTime
+                    lastReleaseX = event.x
+                    lastReleaseY = event.y
+                }
                 touching = false
                 releasedAt = System.currentTimeMillis()
+                dragArmed = false
+                dragActive = false
                 postInvalidateOnAnimation()
             }
         }
         return true
+    }
+
+    private fun handleThreeFingerSwipe(event: MotionEvent) {
+        if (threeFingerTriggered) return
+        val dx = averageX(event) - threeFingerStartX
+        val dy = averageY(event) - threeFingerStartY
+        if (abs(dx) < THREE_FINGER_THRESHOLD_PX && abs(dy) < THREE_FINGER_THRESHOLD_PX) return
+
+        threeFingerTriggered = true
+        if (abs(dx) > abs(dy)) {
+            // Confirmed default across GNOME, Cinnamon, MATE, and XFCE
+            // (not GNOME-specific) — see the class doc comment.
+            val code = if (dx < 0) "ArrowLeft" else "ArrowRight"
+            sendShortcut(listOf("ctrl", "alt"), code)
+        } else if (dy < 0) {
+            // Swipe up: app overview/launcher on most desktop environments.
+            sendShortcut(emptyList(), "Meta")
+        } else {
+            // Swipe down: back/close.
+            sendShortcut(emptyList(), "Escape")
+        }
+    }
+
+    private fun sendShortcut(mods: List<String>, code: String) {
+        onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "down", "mods" to mods))
+        onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "up", "mods" to mods))
     }
 
     private fun averageX(event: MotionEvent): Float {

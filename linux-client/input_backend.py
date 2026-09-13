@@ -71,6 +71,11 @@ KEY_MAP.update({
     "Minus": "KEY_MINUS",
     "Equal": "KEY_EQUAL",
     "PrintScreen": "KEY_SYSRQ",
+    "Home": "KEY_HOME",
+    "End": "KEY_END",
+    "PageUp": "KEY_PAGEUP",
+    "PageDown": "KEY_PAGEDOWN",
+    "Meta": "KEY_LEFTMETA",
 })
 for _n in range(1, 13):
     KEY_MAP[f"F{_n}"] = f"KEY_F{_n}"
