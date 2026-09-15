@@ -40,6 +40,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var expandButton: TextView
     private lateinit var scanButton: TextView
     private lateinit var qrPreview: PreviewView
+    private lateinit var typingPreview: TextView
     private var expanded = false
     private var inScanMode = false
     private lateinit var cameraController: LifecycleCameraController
@@ -82,11 +83,20 @@ class MainActivity : AppCompatActivity() {
         expandButton = findViewById(R.id.expandButton)
         scanButton = findViewById(R.id.scanButton)
         qrPreview = findViewById(R.id.qrPreview)
+        typingPreview = findViewById(R.id.typingPreview)
 
         statusText.text = getString(R.string.status_idle)
 
         trackpad.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
         keyboard.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
+        keyboard.onPreviewTextChanged = { text ->
+            if (text.isEmpty()) {
+                typingPreview.visibility = View.GONE
+            } else {
+                typingPreview.visibility = View.VISIBLE
+                typingPreview.text = text
+            }
+        }
 
         expandButton.setOnClickListener { toggleExpanded() }
         scanButton.setOnClickListener { toggleScan() }

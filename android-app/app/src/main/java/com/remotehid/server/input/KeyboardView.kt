@@ -20,6 +20,17 @@ private const val TEXT_COLOR_LIGHT = Color.WHITE
 private const val TEXT_COLOR_DARK = Color.BLACK
 private const val ROW_HEIGHT_DP = 56f
 private const val KEY_TEXT_SP = 17f
+private const val PREVIEW_MAX_CHARS = 200
+
+// US QWERTY shift-symbol mapping, for the typing preview only — the
+// actual keypress still just sends the base code + "shift" in mods;
+// this is purely about reconstructing a readable echo of what was
+// typed, not part of the wire protocol.
+private val SHIFT_SYMBOLS = mapOf(
+    "Digit1" to "!", "Digit2" to "@", "Digit3" to "#", "Digit4" to "$",
+    "Digit5" to "%", "Digit6" to "^", "Digit7" to "&", "Digit8" to "*",
+    "Digit9" to "(", "Digit0" to ")", "Minus" to "_", "Equal" to "+",
+)
 
 private data class KeySpec(
     val label: String,
@@ -49,6 +60,15 @@ private data class KeySpec(
  *
  * Emits key events as protocol-shaped maps via onEvent — this view
  * knows nothing about WebSockets or JSON.
+ *
+ * Also emits a live local echo of what's being typed via
+ * onPreviewTextChanged, for the "drop-down bar" on the main screen —
+ * this is a reconstruction from which keys were tapped here, not a
+ * readback of what actually landed in a text field on the desktop
+ * (which this phone has no way to know). Letters, digits, symbols, and
+ * space update it; Backspace removes a character; Enter clears it
+ * (treated as "sent"); everything else (arrows, F-keys, Esc, etc.)
+ * leaves it unchanged.
  */
 class KeyboardView @JvmOverloads constructor(
     context: Context,
@@ -56,6 +76,9 @@ class KeyboardView @JvmOverloads constructor(
 ) : LinearLayout(context, attrs) {
 
     var onEvent: ((Map<String, Any?>) -> Unit)? = null
+    var onPreviewTextChanged: ((String) -> Unit)? = null
+
+    private val previewBuffer = StringBuilder()
 
     private val keyRadiusPx = 8f * resources.displayMetrics.density
     private val rowHeightPx = (ROW_HEIGHT_DP * resources.displayMetrics.density).toInt()
@@ -207,7 +230,35 @@ class KeyboardView @JvmOverloads constructor(
         val mods = armedMods.toList()
         onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "down", "mods" to mods))
         onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "up", "mods" to mods))
+        updatePreview(code, "shift" in mods)
         clearModifiers()
+    }
+
+    private fun updatePreview(code: String, shiftArmed: Boolean) {
+        when (code) {
+            "Backspace" -> if (previewBuffer.isNotEmpty()) previewBuffer.deleteCharAt(previewBuffer.length - 1)
+            "Enter" -> previewBuffer.clear()
+            else -> {
+                val char = previewCharFor(code, shiftArmed) ?: return
+                previewBuffer.append(char)
+                if (previewBuffer.length > PREVIEW_MAX_CHARS) {
+                    previewBuffer.delete(0, previewBuffer.length - PREVIEW_MAX_CHARS)
+                }
+            }
+        }
+        onPreviewTextChanged?.invoke(previewBuffer.toString())
+    }
+
+    private fun previewCharFor(code: String, shiftArmed: Boolean): String? = when {
+        code.startsWith("Key") && code.length == 4 -> {
+            val letter = code.substring(3)
+            if (shiftArmed) letter else letter.lowercase()
+        }
+        code.startsWith("Digit") -> if (shiftArmed) SHIFT_SYMBOLS[code] else code.removePrefix("Digit")
+        code == "Minus" -> if (shiftArmed) "_" else "-"
+        code == "Equal" -> if (shiftArmed) "+" else "="
+        code == "Space" -> " "
+        else -> null
     }
 
     private fun clearModifiers() {
