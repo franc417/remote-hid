@@ -25,6 +25,16 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Explicit rather than relying on the action's own default
+          # (which included the legacy "tools" package) — Google has
+          # fully removed "tools" from the SDK repository (superseded
+          # years ago by cmdline-tools/platform-tools/build-tools), so
+          # requesting it now fails outright. platform-tools alone is
+          # enough here; Gradle resolves whatever compileSdk/build-tools
+          # packages it actually needs itself during the build, against
+          # the already-accepted licenses.
+          packages: platform-tools
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
