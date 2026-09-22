@@ -76,6 +76,13 @@ KEY_MAP.update({
     "PageUp": "KEY_PAGEUP",
     "PageDown": "KEY_PAGEDOWN",
     "Meta": "KEY_LEFTMETA",
+    "Semicolon": "KEY_SEMICOLON",
+    "Quote": "KEY_APOSTROPHE",
+    "Slash": "KEY_SLASH",
+    "Backslash": "KEY_BACKSLASH",
+    "BracketLeft": "KEY_LEFTBRACE",
+    "BracketRight": "KEY_RIGHTBRACE",
+    "Backquote": "KEY_GRAVE",
 })
 for _n in range(1, 13):
     KEY_MAP[f"F{_n}"] = f"KEY_F{_n}"

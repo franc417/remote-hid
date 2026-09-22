@@ -32,27 +32,49 @@ private val SHIFT_SYMBOLS = mapOf(
     "Digit9" to "(", "Digit0" to ")", "Minus" to "_", "Equal" to "+",
 )
 
+// Punctuation keys the "123" symbol layer adds — these had no key at
+// all before, unlike !@#$%^&*()_+ which were already one Shift+digit
+// away. Each maps to (unshifted, shifted) for the typing preview.
+private val PUNCTUATION_CHARS = mapOf(
+    "Period" to ("." to ">"),
+    "Comma" to ("," to "<"),
+    "Semicolon" to (";" to ":"),
+    "Quote" to ("'" to "\""),
+    "Slash" to ("/" to "?"),
+    "Backslash" to ("\\" to "|"),
+    "BracketLeft" to ("[" to "{"),
+    "BracketRight" to ("]" to "}"),
+    "Backquote" to ("`" to "~"),
+)
+
 private data class KeySpec(
     val label: String,
     val code: String,
     val sticky: Boolean = false,
-    val inert: Boolean = false,
     val weight: Float = 1f,
     val fnLabel: String? = null,
     val fnCode: String? = null,
+    val symbolLabel: String? = null,
+    val symbolCode: String? = null,
 )
 
 /**
- * Full on-screen keyboard: number row (with F1-F12 under Fn), three
- * letter rows, a modifier dock (including a standalone Windows/Super
- * key), and an arrow cluster that doubles as Home/End/PageUp/PageDown
- * under Fn — matching how a real laptop keyboard's Fn row works.
+ * Full on-screen keyboard: number row (with F1-F12 under Fn, and
+ * punctuation under 123), three letter rows, a modifier dock (including
+ * a standalone Windows/Super key), and an arrow cluster that doubles as
+ * Home/End/PageUp/PageDown under Fn — matching how a real laptop
+ * keyboard's Fn row works.
  *
  * Ctrl/Alt/Shift are sticky: tap arms it (highlighted white/black), the
  * armed set is attached to the next normal key's "mods", then cleared.
- * Fn is a persistent toggle, not sticky-per-keypress: swaps the number
- * row and arrow cluster to their secondary functions until tapped
- * again. 123 is still inert — see android-app/README.md.
+ * Fn and 123 are both persistent toggles (not sticky-per-keypress) that
+ * swap the number row to a secondary layer — F-keys for Fn, punctuation
+ * for 123 — and are mutually exclusive, since they'd otherwise both be
+ * trying to control the same row's content: activating one turns the
+ * other off. 123's punctuation keys (., ; ' / \ [ ] `) had no key at
+ * all before this; !@#$%^&*()_+ were already reachable via Shift+digit
+ * and aren't duplicated here — Shift still works normally on the
+ * punctuation layer too (e.g. Shift+" , " -> "<").
  *
  * Row height is fixed (not stretched to fill whatever space the parent
  * gives it) — see activity_main.xml, where this view is wrap_content
@@ -65,8 +87,8 @@ private data class KeySpec(
  * onPreviewTextChanged, for the "drop-down bar" on the main screen —
  * this is a reconstruction from which keys were tapped here, not a
  * readback of what actually landed in a text field on the desktop
- * (which this phone has no way to know). Letters, digits, symbols, and
- * space update it; Backspace removes a character; Enter clears it
+ * (which this phone has no way to know). Letters, digits, punctuation,
+ * and space update it; Backspace removes a character; Enter clears it
  * (treated as "sent"); everything else (arrows, F-keys, Esc, etc.)
  * leaves it unchanged.
  */
@@ -87,8 +109,13 @@ class KeyboardView @JvmOverloads constructor(
     private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
     private val modifierButtons = mutableMapOf<String, StickyInfo>()
 
+    private data class ToggleInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
+    private var fnButtonInfo: ToggleInfo? = null
+    private var symbolsButtonInfo: ToggleInfo? = null
+
     private var fnActive = false
-    private val fnSwappableKeys = mutableListOf<Pair<TextView, KeySpec>>()
+    private var symbolsActive = false
+    private val swappableKeys = mutableListOf<Pair<TextView, KeySpec>>()
 
     init {
         orientation = VERTICAL
@@ -103,15 +130,15 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun digitsRow() = listOf(
-        KeySpec("1", "Digit1", fnLabel = "F1", fnCode = "F1"),
-        KeySpec("2", "Digit2", fnLabel = "F2", fnCode = "F2"),
-        KeySpec("3", "Digit3", fnLabel = "F3", fnCode = "F3"),
-        KeySpec("4", "Digit4", fnLabel = "F4", fnCode = "F4"),
-        KeySpec("5", "Digit5", fnLabel = "F5", fnCode = "F5"),
-        KeySpec("6", "Digit6", fnLabel = "F6", fnCode = "F6"),
-        KeySpec("7", "Digit7", fnLabel = "F7", fnCode = "F7"),
-        KeySpec("8", "Digit8", fnLabel = "F8", fnCode = "F8"),
-        KeySpec("9", "Digit9", fnLabel = "F9", fnCode = "F9"),
+        KeySpec("1", "Digit1", fnLabel = "F1", fnCode = "F1", symbolLabel = ".", symbolCode = "Period"),
+        KeySpec("2", "Digit2", fnLabel = "F2", fnCode = "F2", symbolLabel = ",", symbolCode = "Comma"),
+        KeySpec("3", "Digit3", fnLabel = "F3", fnCode = "F3", symbolLabel = ";", symbolCode = "Semicolon"),
+        KeySpec("4", "Digit4", fnLabel = "F4", fnCode = "F4", symbolLabel = "'", symbolCode = "Quote"),
+        KeySpec("5", "Digit5", fnLabel = "F5", fnCode = "F5", symbolLabel = "/", symbolCode = "Slash"),
+        KeySpec("6", "Digit6", fnLabel = "F6", fnCode = "F6", symbolLabel = "\\", symbolCode = "Backslash"),
+        KeySpec("7", "Digit7", fnLabel = "F7", fnCode = "F7", symbolLabel = "[", symbolCode = "BracketLeft"),
+        KeySpec("8", "Digit8", fnLabel = "F8", fnCode = "F8", symbolLabel = "]", symbolCode = "BracketRight"),
+        KeySpec("9", "Digit9", fnLabel = "F9", fnCode = "F9", symbolLabel = "`", symbolCode = "Backquote"),
         KeySpec("0", "Digit0", fnLabel = "F10", fnCode = "F10"),
         KeySpec("-", "Minus", fnLabel = "F11", fnCode = "F11"),
         KeySpec("=", "Equal", fnLabel = "F12", fnCode = "F12"),
@@ -138,7 +165,7 @@ class KeyboardView @JvmOverloads constructor(
     )
 
     private fun bottomRow() = listOf(
-        KeySpec("123", "123", inert = true),
+        KeySpec("123", "123"),
         KeySpec("◀", "ArrowLeft", fnLabel = "Home", fnCode = "Home"),
         KeySpec("▼", "ArrowDown", fnLabel = "PgDn", fnCode = "PageDown"),
         KeySpec("▶", "ArrowRight", fnLabel = "End", fnCode = "End"),
@@ -157,7 +184,7 @@ class KeyboardView @JvmOverloads constructor(
     }
 
     private fun buildKeyView(key: KeySpec): TextView {
-        val isModifierLook = key.code in setOf("ctrl", "alt", "fn", "Meta")
+        val isModifierLook = key.code in setOf("ctrl", "alt", "fn", "123", "Meta")
         val restColor = if (isModifierLook) MODIFIER_COLOR else KEY_COLOR
         val restPressedColor = if (isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
@@ -173,11 +200,15 @@ class KeyboardView @JvmOverloads constructor(
 
         view.setOnClickListener {
             when {
-                key.code == "fn" -> toggleFn(view, restColor, restPressedColor)
-                key.inert -> { /* not implemented yet — see android-app/README.md */ }
+                key.code == "fn" -> toggleFn()
+                key.code == "123" -> toggleSymbols()
                 key.sticky -> toggleModifier(key.code, view, restColor, restPressedColor)
                 else -> {
-                    val activeCode = if (fnActive && key.fnCode != null) key.fnCode else key.code
+                    val activeCode = when {
+                        fnActive && key.fnCode != null -> key.fnCode
+                        symbolsActive && key.symbolCode != null -> key.symbolCode
+                        else -> key.code
+                    }
                     sendKey(activeCode)
                 }
             }
@@ -186,8 +217,14 @@ class KeyboardView @JvmOverloads constructor(
         if (key.sticky) {
             modifierButtons[key.code] = StickyInfo(view, restColor, restPressedColor)
         }
-        if (key.fnCode != null) {
-            fnSwappableKeys.add(view to key)
+        if (key.code == "fn") {
+            fnButtonInfo = ToggleInfo(view, restColor, restPressedColor)
+        }
+        if (key.code == "123") {
+            symbolsButtonInfo = ToggleInfo(view, restColor, restPressedColor)
+        }
+        if (key.fnCode != null || key.symbolCode != null) {
+            swappableKeys.add(view to key)
         }
 
         return view
@@ -213,16 +250,43 @@ class KeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun toggleFn(view: TextView, restColor: Int, restPressedColor: Int) {
+    private fun toggleFn() {
         fnActive = !fnActive
+        if (fnActive && symbolsActive) {
+            symbolsActive = false
+            restyleToggleButton(symbolsButtonInfo, active = false)
+        }
+        restyleToggleButton(fnButtonInfo, active = fnActive)
+        updateSwappableLabels()
+    }
+
+    private fun toggleSymbols() {
+        symbolsActive = !symbolsActive
+        if (symbolsActive && fnActive) {
+            fnActive = false
+            restyleToggleButton(fnButtonInfo, active = false)
+        }
+        restyleToggleButton(symbolsButtonInfo, active = symbolsActive)
+        updateSwappableLabels()
+    }
+
+    private fun restyleToggleButton(info: ToggleInfo?, active: Boolean) {
+        val target = info ?: return
         style(
-            view,
-            if (fnActive) ARMED_COLOR else restColor,
-            if (fnActive) ARMED_PRESSED_COLOR else restPressedColor,
-            if (fnActive) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT,
+            target.view,
+            if (active) ARMED_COLOR else target.restColor,
+            if (active) ARMED_PRESSED_COLOR else target.restPressedColor,
+            if (active) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT,
         )
-        for ((btnView, spec) in fnSwappableKeys) {
-            btnView.text = if (fnActive) (spec.fnLabel ?: spec.label) else spec.label
+    }
+
+    private fun updateSwappableLabels() {
+        for ((btnView, spec) in swappableKeys) {
+            btnView.text = when {
+                fnActive && spec.fnLabel != null -> spec.fnLabel
+                symbolsActive && spec.symbolLabel != null -> spec.symbolLabel
+                else -> spec.label
+            }
         }
     }
 
@@ -258,6 +322,10 @@ class KeyboardView @JvmOverloads constructor(
         code == "Minus" -> if (shiftArmed) "_" else "-"
         code == "Equal" -> if (shiftArmed) "+" else "="
         code == "Space" -> " "
+        PUNCTUATION_CHARS.containsKey(code) -> {
+            val (base, shifted) = PUNCTUATION_CHARS.getValue(code)
+            if (shiftArmed) shifted else base
+        }
         else -> null
     }
 
