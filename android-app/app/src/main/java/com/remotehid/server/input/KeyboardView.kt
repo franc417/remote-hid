@@ -22,19 +22,15 @@ private const val ROW_HEIGHT_DP = 56f
 private const val KEY_TEXT_SP = 17f
 private const val PREVIEW_MAX_CHARS = 200
 
-// US QWERTY shift-symbol mapping, for the typing preview only — the
-// actual keypress still just sends the base code + "shift" in mods;
-// this is purely about reconstructing a readable echo of what was
-// typed, not part of the wire protocol.
+// US QWERTY shift-symbol mapping, for the typing preview only.
 private val SHIFT_SYMBOLS = mapOf(
     "Digit1" to "!", "Digit2" to "@", "Digit3" to "#", "Digit4" to "$",
     "Digit5" to "%", "Digit6" to "^", "Digit7" to "&", "Digit8" to "*",
     "Digit9" to "(", "Digit0" to ")", "Minus" to "_", "Equal" to "+",
 )
 
-// Punctuation keys the "123" symbol layer adds — these had no key at
-// all before, unlike !@#$%^&*()_+ which were already one Shift+digit
-// away. Each maps to (unshifted, shifted) for the typing preview.
+// Punctuation keys — real physical keys, 100% reliable on any
+// receiving system. Each maps to (unshifted, shifted) for the preview.
 private val PUNCTUATION_CHARS = mapOf(
     "Period" to ("." to ">"),
     "Comma" to ("," to "<"),
@@ -55,42 +51,43 @@ private data class KeySpec(
     val fnLabel: String? = null,
     val fnCode: String? = null,
     val symbolLabel: String? = null,
+    // Tier 1: a real physical key + forced mods (e.g. Shift+, = "<").
+    // 100% reliable — this is exactly what a physical keyboard sends.
     val symbolCode: String? = null,
+    val symbolForcedMods: List<String> = emptyList(),
+    // Tier 2: no physical key exists for this character at all (€, π,
+    // ×, ...). Sent via the Ctrl+Shift+U Unicode-entry sequence, which
+    // depends on the receiving desktop using IBus (GNOME's default)
+    // and the focused app supporting it — best effort, not guaranteed
+    // the way every other key on this keyboard is.
+    val symbolUnicodeHex: String? = null,
 )
 
 /**
- * Full on-screen keyboard: number row (with F1-F12 under Fn, and
- * punctuation under 123), three letter rows, a modifier dock (including
- * a standalone Windows/Super key), and an arrow cluster that doubles as
- * Home/End/PageUp/PageDown under Fn — matching how a real laptop
- * keyboard's Fn row works.
+ * Full on-screen keyboard. Ctrl/Alt/Shift are sticky (tap to arm, next
+ * key only, then cleared). Fn and 123 are persistent, mutually
+ * exclusive toggles — Fn swaps the number row to F-keys and the arrow
+ * cluster to Home/End/PageUp/PageDown; 123 swaps the *entire alphabet
+ * block* to a symbol layer:
+ * - Number row -> punctuation (. , ; ' / \ [ ] `) — real keys, had no
+ *   UI access at all before.
+ * - qwerty row -> the shifted variants of that same punctuation
+ *   (< > : " ? | { } _) as dedicated single-tap keys — also real
+ *   physical keys (Shift + the punctuation key above), just exposed
+ *   directly instead of needing Shift armed separately first.
+ * - asdf/zxcv rows -> characters with no physical key at all (currency,
+ *   math symbols) via the Ctrl+Shift+U Unicode-entry sequence — see
+ *   symbolUnicodeHex's doc comment above for the reliability caveat.
  *
- * Ctrl/Alt/Shift are sticky: tap arms it (highlighted white/black), the
- * armed set is attached to the next normal key's "mods", then cleared.
- * Fn and 123 are both persistent toggles (not sticky-per-keypress) that
- * swap the number row to a secondary layer — F-keys for Fn, punctuation
- * for 123 — and are mutually exclusive, since they'd otherwise both be
- * trying to control the same row's content: activating one turns the
- * other off. 123's punctuation keys (., ; ' / \ [ ] `) had no key at
- * all before this; !@#$%^&*()_+ were already reachable via Shift+digit
- * and aren't duplicated here — Shift still works normally on the
- * punctuation layer too (e.g. Shift+" , " -> "<").
+ * Row height is fixed (not stretched to fill available space) — see
+ * activity_main.xml, where this view is wrap_content height and the
+ * trackpad absorbs the remaining space.
  *
- * Row height is fixed (not stretched to fill whatever space the parent
- * gives it) — see activity_main.xml, where this view is wrap_content
- * height and the trackpad absorbs the remaining space.
- *
- * Emits key events as protocol-shaped maps via onEvent — this view
- * knows nothing about WebSockets or JSON.
- *
- * Also emits a live local echo of what's being typed via
- * onPreviewTextChanged, for the "drop-down bar" on the main screen —
- * this is a reconstruction from which keys were tapped here, not a
- * readback of what actually landed in a text field on the desktop
- * (which this phone has no way to know). Letters, digits, punctuation,
- * and space update it; Backspace removes a character; Enter clears it
- * (treated as "sent"); everything else (arrows, F-keys, Esc, etc.)
- * leaves it unchanged.
+ * Emits key events as protocol-shaped maps via onEvent, and a live
+ * local echo of what's been typed via onPreviewTextChanged (a
+ * reconstruction from which keys were tapped, not a readback of what
+ * landed in a text field on the desktop — this view knows nothing
+ * about WebSockets, JSON, or the far end).
  */
 class KeyboardView @JvmOverloads constructor(
     context: Context,
@@ -144,12 +141,44 @@ class KeyboardView @JvmOverloads constructor(
         KeySpec("=", "Equal", fnLabel = "F12", fnCode = "F12"),
     )
 
-    private fun qwertyRow() = "qwertyuiop".map { KeySpec(it.toString(), "Key${it.uppercaseChar()}") }
+    // Tier 1: shifted variants of the punctuation above — real keys.
+    private fun qwertyRow() = listOf(
+        KeySpec("q", "KeyQ", symbolLabel = "<", symbolCode = "Comma", symbolForcedMods = listOf("shift")),
+        KeySpec("w", "KeyW", symbolLabel = ">", symbolCode = "Period", symbolForcedMods = listOf("shift")),
+        KeySpec("e", "KeyE", symbolLabel = ":", symbolCode = "Semicolon", symbolForcedMods = listOf("shift")),
+        KeySpec("r", "KeyR", symbolLabel = "\"", symbolCode = "Quote", symbolForcedMods = listOf("shift")),
+        KeySpec("t", "KeyT", symbolLabel = "?", symbolCode = "Slash", symbolForcedMods = listOf("shift")),
+        KeySpec("y", "KeyY", symbolLabel = "|", symbolCode = "Backslash", symbolForcedMods = listOf("shift")),
+        KeySpec("u", "KeyU", symbolLabel = "{", symbolCode = "BracketLeft", symbolForcedMods = listOf("shift")),
+        KeySpec("i", "KeyI", symbolLabel = "}", symbolCode = "BracketRight", symbolForcedMods = listOf("shift")),
+        KeySpec("o", "KeyO", symbolLabel = "~", symbolCode = "Backquote", symbolForcedMods = listOf("shift")),
+        KeySpec("p", "KeyP", symbolLabel = "_", symbolCode = "Minus", symbolForcedMods = listOf("shift")),
+    )
 
-    private fun asdfRow() = "asdfghjkl".map { KeySpec(it.toString(), "Key${it.uppercaseChar()}") }
+    // Tier 2: currency — no physical key, sent via Unicode entry.
+    private fun asdfRow() = listOf(
+        KeySpec("a", "KeyA", symbolLabel = "€", symbolUnicodeHex = "20ac"),
+        KeySpec("s", "KeyS", symbolLabel = "£", symbolUnicodeHex = "a3"),
+        KeySpec("d", "KeyD", symbolLabel = "¥", symbolUnicodeHex = "a5"),
+        KeySpec("f", "KeyF", symbolLabel = "¢", symbolUnicodeHex = "a2"),
+        KeySpec("g", "KeyG", symbolLabel = "×", symbolUnicodeHex = "d7"),
+        KeySpec("h", "KeyH", symbolLabel = "÷", symbolUnicodeHex = "f7"),
+        KeySpec("j", "KeyJ", symbolLabel = "±", symbolUnicodeHex = "b1"),
+        KeySpec("k", "KeyK", symbolLabel = "≈", symbolUnicodeHex = "2248"),
+        KeySpec("l", "KeyL", symbolLabel = "§", symbolUnicodeHex = "a7"),
+    )
 
+    // Tier 2: math comparison/misc — no physical key either.
     private fun zxcvRow(): List<KeySpec> {
-        val letters = "zxcvbnm".map { KeySpec(it.toString(), "Key${it.uppercaseChar()}") }
+        val letters = listOf(
+            KeySpec("z", "KeyZ", symbolLabel = "≠", symbolUnicodeHex = "2260"),
+            KeySpec("x", "KeyX", symbolLabel = "≤", symbolUnicodeHex = "2264"),
+            KeySpec("c", "KeyC", symbolLabel = "≥", symbolUnicodeHex = "2265"),
+            KeySpec("v", "KeyV", symbolLabel = "•", symbolUnicodeHex = "2022"),
+            KeySpec("b", "KeyB", symbolLabel = "√", symbolUnicodeHex = "221a"),
+            KeySpec("n", "KeyN", symbolLabel = "π", symbolUnicodeHex = "3c0"),
+            KeySpec("m", "KeyM", symbolLabel = "∞", symbolUnicodeHex = "221e"),
+        )
         return listOf(KeySpec("⇧", "shift", sticky = true)) + letters + KeySpec("⌫", "Backspace")
     }
 
@@ -203,14 +232,11 @@ class KeyboardView @JvmOverloads constructor(
                 key.code == "fn" -> toggleFn()
                 key.code == "123" -> toggleSymbols()
                 key.sticky -> toggleModifier(key.code, view, restColor, restPressedColor)
-                else -> {
-                    val activeCode = when {
-                        fnActive && key.fnCode != null -> key.fnCode
-                        symbolsActive && key.symbolCode != null -> key.symbolCode
-                        else -> key.code
-                    }
-                    sendKey(activeCode)
-                }
+                fnActive && key.fnCode != null -> sendKey(key.fnCode)
+                symbolsActive && key.symbolUnicodeHex != null ->
+                    sendUnicodeChar(key.symbolUnicodeHex, key.symbolLabel ?: "?")
+                symbolsActive && key.symbolCode != null -> sendKey(key.symbolCode, key.symbolForcedMods)
+                else -> sendKey(key.code)
             }
         }
 
@@ -223,7 +249,7 @@ class KeyboardView @JvmOverloads constructor(
         if (key.code == "123") {
             symbolsButtonInfo = ToggleInfo(view, restColor, restPressedColor)
         }
-        if (key.fnCode != null || key.symbolCode != null) {
+        if (key.fnCode != null || key.symbolCode != null || key.symbolUnicodeHex != null) {
             swappableKeys.add(view to key)
         }
 
@@ -290,12 +316,41 @@ class KeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun sendKey(code: String) {
-        val mods = armedMods.toList()
+    private fun sendRaw(code: String, mods: List<String>) {
         onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "down", "mods" to mods))
         onEvent?.invoke(mapOf("t" to "key", "code" to code, "action" to "up", "mods" to mods))
+    }
+
+    private fun sendKey(code: String, extraMods: List<String> = emptyList()) {
+        val mods = (armedMods + extraMods).distinct()
+        sendRaw(code, mods)
         updatePreview(code, "shift" in mods)
         clearModifiers()
+    }
+
+    /**
+     * Sends a character with no physical key via GTK/IBus's Unicode
+     * entry sequence: Ctrl+Shift+U, the hex codepoint, Enter to commit.
+     * Best-effort — needs the receiving desktop's input method to be
+     * IBus (GNOME's default) and the focused app to support it; unlike
+     * every other key here, this isn't guaranteed to work everywhere.
+     * Deliberately ignores any armed Ctrl/Alt/Shift, since combining
+     * them with this sequence has no well-defined meaning.
+     */
+    private fun sendUnicodeChar(hex: String, previewChar: String) {
+        clearModifiers()
+        sendRaw("KeyU", listOf("ctrl", "shift"))
+        for (digit in hex) {
+            val digitCode = if (digit.isDigit()) "Digit$digit" else "Key${digit.uppercaseChar()}"
+            sendRaw(digitCode, emptyList())
+        }
+        sendRaw("Enter", emptyList())
+
+        previewBuffer.append(previewChar)
+        if (previewBuffer.length > PREVIEW_MAX_CHARS) {
+            previewBuffer.delete(0, previewBuffer.length - PREVIEW_MAX_CHARS)
+        }
+        onPreviewTextChanged?.invoke(previewBuffer.toString())
     }
 
     private fun updatePreview(code: String, shiftArmed: Boolean) {
