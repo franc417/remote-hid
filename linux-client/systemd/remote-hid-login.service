@@ -1,0 +1,26 @@
+[Unit]
+Description=remote-hid pre-login keyboard/trackpad daemon (USB tethering)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/remote-hid/linux-client/login_daemon.py
+Restart=always
+RestartSec=3
+User=remote-hid
+Group=remote-hid
+
+# Defense in depth beyond the dedicated user: no capability to gain
+# privileges, no access to the rest of the filesystem it doesn't need,
+# a private /tmp, and no ability to load kernel modules or write to
+# kernel interfaces other than the one uinput device node it's been
+# explicitly granted via the udev rule.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=multi-user.target

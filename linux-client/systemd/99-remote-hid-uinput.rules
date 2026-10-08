@@ -1,0 +1,8 @@
+# Grants the dedicated "remote-hid" system group access to /dev/uinput.
+#
+# Different from the TAG+="uaccess" rule in the main README: that one
+# only grants access to whoever owns the *active logind session* —
+# there is no session at all before login, so it can't apply here. This
+# is a static group-based rule instead, which works regardless of
+# whether anyone is logged in.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="remote-hid", MODE="0660"

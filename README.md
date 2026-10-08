@@ -31,6 +31,7 @@ that's the kernel's `uinput` interface via `python-evdev`.
 | Protocol        | Defined, validated, unit tested on both sides         |
 | Linux client    | Implemented — message handling fully tested; GUI app (`gui.py`) tested end-to-end including a caught-and-fixed cross-thread Tkinter bug; real `uinput` injection needs a real Linux box with permissions (see below) |
 | Android server  | Embedded WebSocket server + protocol validation written, building via CI (see `android-app/`) — real device testing still ahead |
+| Pre-login daemon | Systemd service for keyboard/trackpad at the login screen via USB tethering, no WiFi needed — logic unit tested, real end-to-end behavior unverified (no tethering hardware available to test against) — see `linux-client/LOGIN_DAEMON.md` |
 | Windows client  | Not started                                          |
 | macOS client    | Not started                                          |
 
@@ -134,6 +135,14 @@ GUI tests need a display — they skip automatically if there isn't one
 (e.g. a bare CI box), and run for real on your actual desktop. To force
 them headless: `xvfb-run -a python3 -m pytest tests/test_gui.py -v`
 (needs the `xvfb` package).
+
+### Run — at the login screen (no WiFi needed)
+
+`gui.py`/`client.py` above need a logged-in session. For a keyboard/
+trackpad that works *before* login, over a USB-C cable instead of
+WiFi, see [`linux-client/LOGIN_DAEMON.md`](./linux-client/LOGIN_DAEMON.md)
+— it's a systemd service, not something you run by hand, and it comes
+with a real security tradeoff worth reading before installing it.
 
 ## Roadmap
 
