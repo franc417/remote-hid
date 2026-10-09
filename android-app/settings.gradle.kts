@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "remote-hid-server"
 include(":app")
+include(":moonlight-adapter")

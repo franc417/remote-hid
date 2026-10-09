@@ -34,6 +34,7 @@ that's the kernel's `uinput` interface via `python-evdev`.
 | Pre-login daemon | Systemd service for keyboard/trackpad at the login screen via USB tethering, no WiFi needed — logic unit tested, real end-to-end behavior unverified (no tethering hardware available to test against) — see `linux-client/LOGIN_DAEMON.md` |
 | Windows client  | Not started                                          |
 | macOS client    | Not started                                          |
+| Moonlight adapter | `android-app/moonlight-adapter/` — reuses `TrackpadView`/`KeyboardView` for an unrelated Mesh remote-desktop project instead of this repo's own WebSocket protocol; pure-Kotlin translation logic is tested, the Android/JNI layer isn't — see `android-app/README.md` |
 
 **Important honesty note:** what's tested so far is the message-parsing
 and dispatch pipeline — decoded JSON in, the correct backend call out —
