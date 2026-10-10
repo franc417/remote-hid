@@ -4,7 +4,10 @@
 // :app's own Protocol.kt already uses. The Android-dependent wiring that calls the real
 // moonlight-common-c JNI functions lives in :app instead, where it belongs.
 plugins {
-    id("org.jetbrains.kotlin.jvm") version "1.9.24"
+    // Version intentionally omitted -- pinned centrally in the root build.gradle.kts
+    // instead, alongside org.jetbrains.kotlin.android. Declaring a version here too was
+    // the original mistake (see the root file's comment on this same plugin).
+    id("org.jetbrains.kotlin.jvm")
 }
 
 java {
