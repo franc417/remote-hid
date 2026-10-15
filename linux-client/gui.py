@@ -21,6 +21,7 @@ from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
+from reconnect import backoff_delay, candidates, load_known, remember, scan_subnet
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
 RENDEZVOUS_PORT = 8766
@@ -29,6 +30,13 @@ BG = "#000000"
 SURFACE = "#1E1E1E"
 FG = "#FFFFFF"
 MUTED = "#AAAAAA"
+
+
+def known_path() -> Path:
+    """Remembered-phones file, next to CONFIG_PATH. Resolved at call time
+    (not import time) so tests that point CONFIG_PATH at a temp dir move
+    this with it instead of writing into the real ~/.config."""
+    return CONFIG_PATH.with_name("known_devices.json")
 
 
 def load_last_uri() -> str:
@@ -79,15 +87,17 @@ class App:
         self.task = None
         self.thread = None
         self.connected = False
+        self._stop = threading.Event()  # set by disconnect(): ends the reconnect loop, not just one attempt
+        self.auto_reconnect = True
 
         root.title("remote-hid")
         root.configure(bg=BG)
-        root.geometry("380x420")
+        root.geometry("380x450")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         tk.Label(root, text="Phone address", bg=BG, fg=FG).pack(pady=(18, 4))
 
-        self.uri_var = tk.StringVar(value=load_last_uri() or "ws://")
+        self.uri_var = tk.StringVar(value=(load_known(known_path(), CONFIG_PATH) or [""])[0] or "ws://")
         tk.Entry(
             root,
             textvariable=self.uri_var,
@@ -113,6 +123,22 @@ class App:
             activeforeground=FG,
         )
         self.connect_button.pack(pady=6)
+
+        # A plain attribute mirrors the checkbox: the connection thread reads
+        # it, and Tk variables must only be touched from the main thread.
+        self.auto_var = tk.BooleanVar(value=True)
+        self.auto_var.trace_add("write", lambda *_: setattr(self, "auto_reconnect", self.auto_var.get()))
+        tk.Checkbutton(
+            root,
+            text="Reconnect automatically",
+            variable=self.auto_var,
+            bg=BG,
+            fg=FG,
+            selectcolor=SURFACE,
+            activebackground=BG,
+            activeforeground=FG,
+            highlightthickness=0,
+        ).pack(pady=(0, 2))
 
         tk.Label(root, text="or scan with the phone", bg=BG, fg=MUTED).pack(pady=(14, 4))
         self.qr_label = tk.Label(root, bg=BG)
@@ -193,19 +219,33 @@ class App:
         else:
             self.connect()
 
-    def connect(self):
+    def autostart(self):
+        """At launch, go straight to the most recent phone that has connected
+        before, and keep trying until it's there. Called from main() only, not
+        from __init__, so constructing an App (as the tests do) never opens a
+        connection on its own."""
+        if not self.auto_reconnect or self.connected:
+            return
+        known = load_known(known_path(), CONFIG_PATH)
+        if not known:
+            return
+        self.uri_var.set(known[0])
+        self.connect(persistent=True)
+
+    def connect(self, persistent: bool = False):
         uri = self.uri_var.get().strip()
         if not is_valid_ws_uri(uri):
             self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765")
             return
-        save_last_uri(uri)
         self.connected = True
+        self._stop.clear()
         self.connect_button.config(text="Disconnect")
         self.status_var.set("Connecting...")
-        self.thread = threading.Thread(target=self._run, args=(uri,), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(uri, persistent), daemon=True)
         self.thread.start()
 
     def disconnect(self):
+        self._stop.set()
         if self.loop and self.task:
             self.loop.call_soon_threadsafe(self.task.cancel)
         self.connected = False
@@ -214,7 +254,7 @@ class App:
     def _set_status(self, text: str):
         self.status_queue.put(("status", text))
 
-    def _run(self, uri: str):
+    def _run(self, uri: str, persistent: bool = False):
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
@@ -225,27 +265,77 @@ class App:
             self.status_queue.put(("reset_button", None))
             return
 
-        self.task = self.loop.create_task(run_client(uri, backend, on_status=self._set_status))
+        def scan():
+            ip = local_ip()
+            return [] if ip.startswith("127.") else scan_subnet(ip)
+
+        # Retrying only happens once a connection has actually worked in this
+        # session (or when launched via autostart with a remembered phone). A
+        # first attempt at a mistyped address still fails once and stops, the
+        # way it always did, instead of retrying a typo forever.
+        primary = uri
+        attempt = 0
+        ever_connected = False
+        reason = ""
         try:
-            self.loop.run_until_complete(self.task)
-        except asyncio.CancelledError:
-            self.status_queue.put(("status", "Disconnected"))
-        except OSError as exc:
-            self.status_queue.put(("status", f"Could not connect: {exc}"))
-        except Exception as exc:
-            # Deliberately broad: this is the fix for a real, observed
-            # bug. websockets.exceptions.ConnectionClosedError (phone
-            # dropped the connection, e.g. the app got backgrounded)
-            # isn't a CancelledError or an OSError, so it fell through
-            # both specific handlers uncaught. The finally block below
-            # still reset the button correctly either way (finally
-            # always runs) — but the status text was never told the
-            # connection had actually died, so it kept showing stale
-            # "Connected to ..." text while nothing was connected. This
-            # catch-all is what actually fixes that: every failure mode
-            # now updates status to something true, not just the two
-            # anticipated ones.
-            self.status_queue.put(("status", f"Connection lost: {exc}"))
+            while True:
+                connected_here = False
+                targets = candidates(primary, load_known(known_path(), CONFIG_PATH), attempt,
+                                     scan if self.auto_reconnect else None)
+                for target in targets:
+                    if self._stop.is_set():
+                        break
+                    state = {"up": False}
+
+                    def on_status(text, target=target, state=state):
+                        if text.startswith("Connected"):
+                            state["up"] = True
+                            remember(target, known_path(), CONFIG_PATH)  # only a phone that really connected
+                        self._set_status(text)
+
+                    self.task = self.loop.create_task(run_client(target, backend, on_status=on_status))
+                    try:
+                        self.loop.run_until_complete(self.task)
+                    except asyncio.CancelledError:
+                        self._stop.set()
+                        self.status_queue.put(("status", "Disconnected"))
+                    except OSError as exc:
+                        reason = f"Could not connect: {exc}"
+                        self.status_queue.put(("status", reason))
+                    except Exception as exc:
+                        # Deliberately broad: this is the fix for a real, observed
+                        # bug. websockets.exceptions.ConnectionClosedError (phone
+                        # dropped the connection, e.g. the app got backgrounded)
+                        # isn't a CancelledError or an OSError, so it fell through
+                        # both specific handlers uncaught. The finally block below
+                        # still reset the button correctly either way (finally
+                        # always runs) -- but the status text was never told the
+                        # connection had actually died, so it kept showing stale
+                        # "Connected to ..." text while nothing was connected. This
+                        # catch-all is what actually fixes that: every failure mode
+                        # now updates status to something true, not just the two
+                        # anticipated ones.
+                        reason = f"Connection lost: {exc}"
+                        self.status_queue.put(("status", reason))
+                    if state["up"]:
+                        ever_connected = connected_here = True
+                        primary = target  # the one that worked leads the next round
+                        break
+                    if self._stop.is_set():
+                        break
+
+                if self._stop.is_set() or not self.auto_reconnect or not (persistent or ever_connected):
+                    break
+                if connected_here:
+                    attempt = 0
+                delay = backoff_delay(attempt)
+                attempt += 1
+                prefix = f"{reason}. " if reason else "Connection closed. "
+                self.status_queue.put(("status", f"{prefix}Retrying in {delay:.0f}s..."))
+                if self._stop.wait(delay):
+                    break
+            if self._stop.is_set():
+                self.status_queue.put(("status", "Disconnected"))
         finally:
             backend.close()
             self.status_queue.put(("reset_button", None))
@@ -270,7 +360,8 @@ class App:
 
 def main():
     root = tk.Tk()
-    App(root)
+    app = App(root)
+    app.autostart()
     root.mainloop()
 
 

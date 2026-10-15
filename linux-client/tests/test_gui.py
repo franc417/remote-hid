@@ -162,6 +162,10 @@ def test_unexpected_exception_type_still_updates_status(monkeypatch):
     try:
         app = gui.App(root)
         root.update()
+        # This test pins the original contract: a drop ends the session. That is
+        # what the app does with auto-reconnect off; with it on (the default) the
+        # app keeps retrying instead -- covered by the reconnect tests below.
+        app.auto_var.set(False)
         app.uri_var.set("ws://127.0.0.1:9")
         app.connect()
 
@@ -232,3 +236,198 @@ def test_rendezvous_announce_autofills_and_connects(monkeypatch):
     finally:
         app._on_close()
 
+
+
+# ---------------------------------------------------------------- auto-reconnect
+
+import reconnect  # noqa: E402
+
+
+def _wait(root, cond, seconds=5.0):
+    """Pump Tk (the GUI only applies status changes from its own poll loop)
+    until cond() holds. Returns whether it did, rather than raising, so the
+    caller's assert can say what the state actually was."""
+    end = time.time() + seconds
+    while time.time() < end:
+        root.update()
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _reconnect_app(monkeypatch, tmp_path, fake_run_client):
+    monkeypatch.setattr(gui, "UinputBackend", MockBackend)
+    monkeypatch.setattr(gui, "run_client", fake_run_client)
+    monkeypatch.setattr(gui, "CONFIG_PATH", tmp_path / "last_connection.json")  # known_path() follows it
+    monkeypatch.setattr(gui, "backoff_delay", lambda n: 0.02)  # don't make the suite sit through real waits
+    monkeypatch.setattr(gui, "local_ip", lambda: "10.0.0.5")
+    monkeypatch.setattr(gui, "scan_subnet", lambda ip: [])  # no real network scanning in tests
+    root = tk.Tk()
+    return root, gui.App(root)
+
+
+def test_drop_after_connecting_retries_and_keeps_the_reason_visible(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        calls.append(uri)
+        on_status(f"Connected to {uri}")
+        if len(calls) == 1:
+            raise RuntimeError("phone went away")
+        await asyncio.sleep(30)  # second time it stays up until cancelled
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: len(calls) >= 2), f"never retried, calls={calls}"
+        assert calls == ["ws://10.0.0.7:8765"] * 2
+        assert _wait(root, lambda: app.status_var.get().startswith("Connected"))
+        assert app.connect_button.cget("text") == "Disconnect"  # still "in session", just retried
+
+        app.disconnect()
+        # disconnect() flips the button on the UI thread at once; the worker
+        # thread posts "Disconnected" a moment later, so wait for that.
+        assert _wait(root, lambda: app.status_var.get() == "Disconnected")
+        assert app.connect_button.cget("text") == "Connect"
+        assert app.connected is False
+    finally:
+        app._on_close()
+
+
+def test_retry_status_says_why_not_just_that_it_is_retrying(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        on_status(f"Connected to {uri}")
+        raise RuntimeError("phone went away")
+
+    monkeypatch.setattr(gui, "backoff_delay", lambda n: 5)  # park it in the wait so the text stays put
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    monkeypatch.setattr(gui, "backoff_delay", lambda n: 5)
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: "Retrying" in app.status_var.get())
+        text = app.status_var.get()
+        assert "Connection lost" in text and "phone went away" in text, text
+    finally:
+        app._on_close()
+
+
+def test_a_first_attempt_that_never_connects_does_not_retry(monkeypatch, tmp_path):
+    attempts = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        attempts.append(uri)
+        raise OSError("connection refused")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("ws://10.0.0.99:8765")  # a typo'd / wrong address
+        app.connect()
+        assert _wait(root, lambda: app.connect_button.cget("text") == "Connect")
+        time.sleep(0.2)
+        root.update()
+        assert attempts == ["ws://10.0.0.99:8765"]  # tried once, stopped -- not retried forever
+        assert "Could not connect" in app.status_var.get()
+        assert reconnect.load_known(gui.known_path(), gui.CONFIG_PATH) == []  # a failure is never remembered
+    finally:
+        app._on_close()
+
+
+def test_autostart_keeps_trying_until_the_remembered_phone_appears(monkeypatch, tmp_path):
+    attempts = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        attempts.append(uri)
+        if len(attempts) < 3:
+            raise OSError("not up yet")
+        on_status(f"Connected to {uri}")
+        await asyncio.sleep(30)
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        reconnect.remember("ws://10.0.0.7:8765", gui.known_path(), gui.CONFIG_PATH)
+        app.autostart()
+        assert app.uri_var.get() == "ws://10.0.0.7:8765"
+        assert _wait(root, lambda: app.status_var.get().startswith("Connected")), app.status_var.get()
+        assert attempts[:3] == ["ws://10.0.0.7:8765"] * 3
+    finally:
+        app._on_close()
+
+
+def test_autostart_with_nothing_remembered_does_nothing(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("must not connect with no remembered phone")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.autostart()
+        root.update()
+        assert app.connected is False
+    finally:
+        app._on_close()
+
+
+def test_autostart_respects_the_toggle(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("auto-reconnect is off; must not connect")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        reconnect.remember("ws://10.0.0.7:8765", gui.known_path(), gui.CONFIG_PATH)
+        app.auto_var.set(False)
+        root.update()
+        app.autostart()
+        assert app.connected is False
+    finally:
+        app._on_close()
+
+
+def test_a_phone_whose_address_changed_is_found_by_the_subnet_scan(monkeypatch, tmp_path):
+    attempts = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        attempts.append(uri)
+        if uri != "ws://10.0.0.42:8765":  # the phone's new lease; the old one is dead
+            raise OSError("no route")
+        on_status(f"Connected to {uri}")
+        await asyncio.sleep(30)
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    monkeypatch.setattr(gui, "scan_subnet", lambda ip: ["ws://10.0.0.42:8765"])
+    try:
+        reconnect.remember("ws://10.0.0.7:8765", gui.known_path(), gui.CONFIG_PATH)
+        app.autostart()
+        assert _wait(root, lambda: app.status_var.get().startswith("Connected")), app.status_var.get()
+        assert attempts[-1] == "ws://10.0.0.42:8765"
+        # ...and it's now what's remembered first, so next launch goes straight there
+        assert reconnect.load_known(gui.known_path(), gui.CONFIG_PATH)[0] == "ws://10.0.0.42:8765"
+    finally:
+        app._on_close()
+
+
+def test_disconnect_during_the_retry_wait_stops_immediately(monkeypatch, tmp_path):
+    attempts = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        attempts.append(uri)
+        on_status(f"Connected to {uri}")
+        raise RuntimeError("dropped")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    monkeypatch.setattr(gui, "backoff_delay", lambda n: 30)  # a long wait we must be able to interrupt
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: "Retrying in 30s" in app.status_var.get())
+        t0 = time.time()
+        app.disconnect()
+        # "Disconnected" is only posted once the worker's loop has actually
+        # exited, so seeing it within 2s proves the 30s wait was interrupted
+        # (the button alone isn't proof: disconnect() resets it immediately).
+        assert _wait(root, lambda: app.status_var.get() == "Disconnected", seconds=3)
+        assert time.time() - t0 < 2, "disconnect had to wait out the retry delay"
+        assert len(attempts) == 1  # no retry sneaked in after the click
+    finally:
+        app._on_close()
