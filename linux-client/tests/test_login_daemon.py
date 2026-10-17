@@ -207,3 +207,56 @@ def test_run_forever_skips_connecting_when_nothing_tether_shaped_is_up(monkeypat
 
     asyncio.run(run_briefly())
     assert attempted == []
+
+
+def test_watch_gateway_returns_when_the_gateway_disappears(monkeypatch):
+    monkeypatch.setattr(login_daemon, "WATCH_SECONDS", 0.02)
+    answers = iter(["10.98.4.1", "10.98.4.1", None])
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: next(answers, None))
+    asyncio.run(asyncio.wait_for(login_daemon._watch_gateway("10.98.4.1"), timeout=2))
+
+
+def test_watch_gateway_returns_when_the_gateway_changes(monkeypatch):
+    monkeypatch.setattr(login_daemon, "WATCH_SECONDS", 0.02)
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: "10.98.4.129")
+    asyncio.run(asyncio.wait_for(login_daemon._watch_gateway("10.98.4.1"), timeout=2))
+
+
+def test_session_stuck_on_a_dead_socket_is_dropped_when_cable_goes_away(monkeypatch):
+    # The real bug: connect_and_relay hangs forever on a socket whose
+    # interface vanished. The watcher must cancel it so the daemon can
+    # look at the NEW interface after a replug.
+    monkeypatch.setattr(login_daemon, "WATCH_SECONDS", 0.02)
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: None)
+    cancelled = []
+
+    async def hung_relay(backend, uri):
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancelled.append(uri)
+            raise
+
+    monkeypatch.setattr(login_daemon, "connect_and_relay", hung_relay)
+    asyncio.run(asyncio.wait_for(
+        login_daemon.relay_until_cable_changes(MockBackend(), "10.98.4.1"), timeout=2))
+    assert cancelled == ["ws://10.98.4.1:8765"]
+
+
+def test_relay_error_still_propagates_to_run_forever(monkeypatch):
+    monkeypatch.setattr(login_daemon, "WATCH_SECONDS", 5)
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: "10.98.4.1")
+
+    async def failing_relay(backend, uri):
+        raise ConnectionRefusedError("phone app not running yet")
+
+    monkeypatch.setattr(login_daemon, "connect_and_relay", failing_relay)
+    try:
+        asyncio.run(login_daemon.relay_until_cable_changes(MockBackend(), "10.98.4.1"))
+        assert False, "expected the error to propagate"
+    except ConnectionRefusedError:
+        pass
+
+
+def test_keepalive_is_short_enough_to_notice_an_unplugged_cable():
+    assert login_daemon.PING_INTERVAL + login_daemon.PING_TIMEOUT <= 15

@@ -60,7 +60,20 @@ from handler import handle_message
 from input_backend import UinputBackend
 
 PORT = 8765
-RETRY_SECONDS = 3
+RETRY_SECONDS = 1
+
+# A yanked USB cable does not close the TCP connection: the kernel just
+# stops getting answers. With the old 600s ping_timeout the daemon sat on
+# that dead socket for up to ten minutes and never looked at the NEW
+# interface after a replug, which is exactly "sometimes works, sometimes
+# doesn't" (works if the old session happened to die cleanly). Short
+# keepalive on a local cable link is safe: a healthy link answers in ms.
+PING_INTERVAL = 5
+PING_TIMEOUT = 5
+
+# How often the watcher re-asks the OS whether the cable's gateway is
+# still the one we are connected to.
+WATCH_SECONDS = 1
 
 # Interfaces that are clearly not a tethered phone, excluded before
 # even checking whether they look USB-attached.
@@ -148,7 +161,9 @@ async def connect_and_relay(backend, uri: str) -> None:
     via the same tested handler.handle_message everything else uses,
     until the connection ends.
     """
-    async with websockets.connect(uri, ping_interval=20, ping_timeout=600) as ws:
+    async with websockets.connect(
+        uri, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT
+    ) as ws:
         print(f"[login-daemon] connected to {uri}")
         async for raw_frame in ws:
             try:
@@ -158,6 +173,41 @@ async def connect_and_relay(backend, uri: str) -> None:
                 continue
             handle_message(msg, backend)
         print("[login-daemon] connection closed")
+
+
+async def _watch_gateway(gateway: str) -> None:
+    """Returns as soon as the tether gateway is gone or changed (cable
+    unplugged, or replugged and re-addressed). Used to cancel a relay
+    that is stuck on a socket whose interface no longer exists.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(WATCH_SECONDS)
+        current = await loop.run_in_executor(None, find_tether_gateway)
+        if current != gateway:
+            print(f"[login-daemon] tether gateway changed ({gateway} -> {current}), dropping session")
+            return
+
+
+async def relay_until_cable_changes(backend, gateway: str) -> None:
+    """One session: relay until the connection ends OR the cable's
+    gateway changes, whichever comes first. Whichever side finishes
+    first, the other is cancelled so nothing is left dangling.
+    """
+    uri = f"ws://{gateway}:{PORT}"
+    relay = asyncio.ensure_future(connect_and_relay(backend, uri))
+    watcher = asyncio.ensure_future(_watch_gateway(gateway))
+    try:
+        await asyncio.wait({relay, watcher}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for task in (relay, watcher):
+            if not task.done():
+                task.cancel()
+        results = await asyncio.gather(relay, watcher, return_exceptions=True)
+    # Surface a real connection error from the relay (not cancellation).
+    exc = results[0]
+    if isinstance(exc, Exception) and not isinstance(exc, asyncio.CancelledError):
+        raise exc
 
 
 async def run_forever() -> None:
@@ -172,11 +222,10 @@ async def run_forever() -> None:
         while True:
             gateway = find_tether_gateway()
             if gateway:
-                uri = f"ws://{gateway}:{PORT}"
                 try:
-                    await connect_and_relay(backend, uri)
+                    await relay_until_cable_changes(backend, gateway)
                 except (OSError, websockets.exceptions.WebSocketException) as exc:
-                    print(f"[login-daemon] connection attempt to {uri} failed: {exc}")
+                    print(f"[login-daemon] connection attempt to ws://{gateway}:{PORT} failed: {exc}")
             await asyncio.sleep(RETRY_SECONDS)
     finally:
         backend.close()

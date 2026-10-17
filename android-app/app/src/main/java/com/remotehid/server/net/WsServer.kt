@@ -75,12 +75,35 @@ class WsServer(
         return object : WebSocket(handshake) {
 
             override fun onOpen() {
+                // The newest connection always wins. After a cable
+                // unplug/replug the OLD socket is usually still "open"
+                // from this side (no FIN ever arrived), so keeping it
+                // as the active one would send to a dead link, and its
+                // eventual timeout would wipe out the new session (see
+                // onClose below). Close the old one explicitly.
+                val previous = activeSocket
                 activeSocket = this
+                if (previous != null && previous !== this) {
+                    try {
+                        previous.close(WebSocketFrame.CloseCode.GoingAway, "replaced by a newer connection", false)
+                    } catch (e: IOException) {
+                        Log.w(TAG, "closing the replaced connection failed: ${e.message}")
+                    }
+                }
                 Log.i(TAG, "client connected")
                 onClientConnected?.invoke()
             }
 
             override fun onClose(code: WebSocketFrame.CloseCode?, reason: String?, initiatedByRemote: Boolean) {
+                // Only the ACTIVE socket may clear state. A stale socket
+                // closing late (read timeout on an unplugged cable) used
+                // to null out activeSocket and report "disconnected"
+                // while a fresh connection was working: the intermittent
+                // USB failure.
+                if (activeSocket !== this) {
+                    Log.i(TAG, "stale connection closed ($reason), ignoring")
+                    return
+                }
                 activeSocket = null
                 Log.i(TAG, "client disconnected: $reason")
                 onClientDisconnected?.invoke()
