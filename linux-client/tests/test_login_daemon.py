@@ -260,3 +260,114 @@ def test_relay_error_still_propagates_to_run_forever(monkeypatch):
 
 def test_keepalive_is_short_enough_to_notice_an_unplugged_cable():
     assert login_daemon.PING_INTERVAL + login_daemon.PING_TIMEOUT <= 15
+
+
+# ------------------------------------------------ standing aside for a user session
+
+def test_tcp_peer_hex_matches_how_proc_net_tcp_writes_addresses():
+    assert login_daemon._tcp_peer_hex("10.98.4.1", 8765) == "0104620A:223D"
+
+
+_PROC_HEADER = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+
+
+def _proc(tmp_path, *rows):
+    path = tmp_path / "tcp"
+    path.write_text(_PROC_HEADER + "".join(rows))
+    return str(path)
+
+
+def _row(rem, state):
+    return f"   0: 0701620A:D2F4 {rem} {state} 00000000:00000000 00:00000000 00000000  1000        0 12345 1 0000 100 0 0 10 0\n"
+
+
+def test_another_client_connected_sees_an_established_connection_to_the_phone(tmp_path):
+    path = _proc(tmp_path, _row("0104620A:223D", "01"))
+    assert login_daemon.another_client_connected("10.98.4.1", 8765, path) is True
+
+
+def test_other_peers_and_non_established_states_do_not_count(tmp_path):
+    path = _proc(tmp_path, _row("0104620A:223D", "06"),   # TIME_WAIT
+                 _row("0A04620A:223D", "01"),             # a different host
+                 _row("0104620A:1F90", "01"))             # a different port
+    assert login_daemon.another_client_connected("10.98.4.1", 8765, path) is False
+
+
+def test_an_unreadable_table_means_not_busy_so_the_login_screen_is_never_locked_out(tmp_path):
+    assert login_daemon.another_client_connected("10.98.4.1", 8765, str(tmp_path / "missing")) is False
+
+
+def test_another_client_connected_against_a_real_kernel_connection():
+    import socket as _s
+    srv = _s.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    cli = _s.create_connection(("127.0.0.1", port))
+    conn, _ = srv.accept()
+    try:
+        assert login_daemon.another_client_connected("127.0.0.1", port) is True
+    finally:
+        cli.close(); conn.close(); srv.close()
+    assert login_daemon.another_client_connected("127.0.0.1", port) is False
+
+
+def test_connect_and_relay_reports_a_takeover_by_the_phone():
+    import websockets
+    from protocol import REPLACED_REASON, SessionReplaced
+
+    async def phone(ws):
+        await ws.close(code=1001, reason=REPLACED_REASON)
+
+    async def scenario():
+        async with websockets.serve(phone, "127.0.0.1", 8771):
+            await asyncio.wait_for(
+                login_daemon.connect_and_relay(MockBackend(), "ws://127.0.0.1:8771"), timeout=5)
+
+    import pytest
+    with pytest.raises(SessionReplaced):
+        asyncio.run(scenario())
+
+
+def _run_loop_briefly(seconds=0.3):
+    async def go():
+        task = asyncio.create_task(login_daemon.run_forever())
+        await asyncio.sleep(seconds)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    asyncio.run(go())
+
+
+def test_daemon_does_not_connect_while_a_user_session_holds_the_phone(monkeypatch):
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: "10.98.4.1")
+    monkeypatch.setattr(login_daemon, "another_client_connected", lambda gw, *a: True)
+    monkeypatch.setattr(login_daemon, "UinputBackend", MockBackend)
+    monkeypatch.setattr(login_daemon, "RETRY_SECONDS", 0.05)
+    attempted = []
+
+    async def fake_relay(backend, gateway):
+        attempted.append(gateway)
+
+    monkeypatch.setattr(login_daemon, "relay_until_cable_changes", fake_relay)
+    _run_loop_briefly()
+    assert attempted == []
+
+
+def test_daemon_survives_being_taken_over_and_keeps_looping(monkeypatch):
+    from protocol import SessionReplaced
+    monkeypatch.setattr(login_daemon, "find_tether_gateway", lambda: "10.98.4.1")
+    monkeypatch.setattr(login_daemon, "another_client_connected", lambda gw, *a: False)
+    monkeypatch.setattr(login_daemon, "UinputBackend", MockBackend)
+    monkeypatch.setattr(login_daemon, "RETRY_SECONDS", 0.05)
+    attempts = []
+
+    async def fake_relay(backend, gateway):
+        attempts.append(gateway)
+        raise SessionReplaced("x")
+
+    monkeypatch.setattr(login_daemon, "relay_until_cable_changes", fake_relay)
+    _run_loop_briefly()
+    assert len(attempts) >= 2  # it did not crash on the takeover

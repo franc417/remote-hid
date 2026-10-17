@@ -263,6 +263,7 @@ def _reconnect_app(monkeypatch, tmp_path, fake_run_client):
     monkeypatch.setattr(gui, "backoff_delay", lambda n: 0.02)  # don't make the suite sit through real waits
     monkeypatch.setattr(gui, "local_ip", lambda: "10.0.0.5")
     monkeypatch.setattr(gui, "scan_subnet", lambda ip: [])  # no real network scanning in tests
+    monkeypatch.setattr(gui, "prioritize", lambda targets: list(targets))  # no real probes either
     root = tk.Tk()
     return root, gui.App(root)
 
@@ -429,5 +430,137 @@ def test_disconnect_during_the_retry_wait_stops_immediately(monkeypatch, tmp_pat
         assert _wait(root, lambda: app.status_var.get() == "Disconnected", seconds=3)
         assert time.time() - t0 < 2, "disconnect had to wait out the retry delay"
         assert len(attempts) == 1  # no retry sneaked in after the click
+    finally:
+        app._on_close()
+
+
+# ------------------------------------------------ switching and stale sessions
+
+def _announce(port, uri):
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
+        conn.sendall(uri.encode() + b"\n")
+
+
+def test_scanning_a_second_phone_switches_to_it_and_drops_the_first(monkeypatch, tmp_path):
+    monkeypatch.setattr(gui, "UinputBackend", MockBackend)
+    monkeypatch.setattr(gui, "RENDEZVOUS_PORT", 8780)
+    monkeypatch.setattr(gui, "CONFIG_PATH", tmp_path / "last_connection.json")
+    import websockets
+
+    opened, closed = [], []
+
+    def make_phone(name, port):
+        async def phone(ws):
+            opened.append(name)
+            try:
+                await ws.wait_closed()
+            finally:
+                closed.append(name)
+
+        async def serve():
+            async with websockets.serve(phone, "127.0.0.1", port):
+                await asyncio.Event().wait()
+
+        threading.Thread(target=lambda: asyncio.run(serve()), daemon=True).start()
+
+    make_phone("A", 8781)
+    make_phone("B", 8782)
+    time.sleep(0.3)
+
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+        time.sleep(0.3)
+        app.uri_var.set("ws://127.0.0.1:8781")
+        app.connect()
+        assert _wait(root, lambda: app.session.target == "ws://127.0.0.1:8781")
+        first = app.session
+
+        _announce(8780, "ws://127.0.0.1:8782")  # scan phone B while connected to A
+        assert _wait(root, lambda: app.session is not first and app.session.target == "ws://127.0.0.1:8782")
+        assert _wait(root, lambda: "A" in closed), "the first phone was never released"
+        assert _wait(root, lambda: "Connected to ws://127.0.0.1:8782" in app.status_var.get()), app.status_var.get()
+        assert app.connect_button.cget("text") == "Disconnect"
+        # The first session winding down must not have reset the live one's button.
+        root.update(); time.sleep(0.3); root.update()
+        assert app.connect_button.cget("text") == "Disconnect"
+    finally:
+        app._on_close()
+
+
+def test_scanning_the_phone_you_are_already_connected_to_does_nothing(monkeypatch, tmp_path):
+    runs = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        runs.append(uri)
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "RENDEZVOUS_PORT", 8783)
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: app.session.target == "ws://10.0.0.7:8765")
+        app.status_queue.put(("announced_uri", "ws://10.0.0.7:8765", None))
+        _wait(root, lambda: False, 0.5)
+        assert runs == ["ws://10.0.0.7:8765"]
+    finally:
+        app._on_close()
+
+
+def test_a_takeover_stops_retrying_and_says_why(monkeypatch, tmp_path):
+    from protocol import SessionReplaced
+    runs = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        runs.append(uri)
+        on_status(f"Connected to {uri}")
+        raise SessionReplaced("x")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: app.connect_button.cget("text") == "Connect" and "took over" in app.status_var.get())
+        _wait(root, lambda: False, 0.4)
+        assert runs == ["ws://10.0.0.7:8765"], "must not reconnect after being taken over"
+        assert "took over" in app.status_var.get()
+    finally:
+        app._on_close()
+
+
+def test_messages_from_a_replaced_session_are_ignored(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: app.session.target is not None)
+        stale = gui.Session()
+        app.status_queue.put(("reset_button", None, stale))
+        app.status_queue.put(("status", "Disconnected", stale))
+        _wait(root, lambda: False, 0.4)
+        assert app.connect_button.cget("text") == "Disconnect"
+        assert "Connected to" in app.status_var.get()
+    finally:
+        app._on_close()
+
+
+def test_disconnect_after_the_session_loop_already_ended_does_not_crash(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise OSError("refused")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: app.connect_button.cget("text") == "Connect")
+        app.session.loop.close() if not app.session.loop.is_closed() else None
+        app.disconnect()  # its loop is gone: must be a no-op, not a RuntimeError
     finally:
         app._on_close()

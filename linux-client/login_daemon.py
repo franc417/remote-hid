@@ -58,6 +58,7 @@ import websockets
 
 from handler import handle_message
 from input_backend import UinputBackend
+from protocol import REPLACED_REASON, SessionReplaced
 
 PORT = 8765
 RETRY_SECONDS = 1
@@ -162,7 +163,11 @@ async def connect_and_relay(backend, uri: str) -> None:
     until the connection ends.
     """
     async with websockets.connect(
-        uri, ping_interval=PING_INTERVAL, ping_timeout=PING_TIMEOUT
+        uri,
+        ping_interval=PING_INTERVAL,
+        ping_timeout=PING_TIMEOUT,
+        open_timeout=4,
+        close_timeout=1,  # cancelling over a dead cable must not wait the 10s default
     ) as ws:
         print(f"[login-daemon] connected to {uri}")
         async for raw_frame in ws:
@@ -173,6 +178,38 @@ async def connect_and_relay(backend, uri: str) -> None:
                 continue
             handle_message(msg, backend)
         print("[login-daemon] connection closed")
+        if getattr(ws, "close_reason", None) == REPLACED_REASON:
+            raise SessionReplaced(REPLACED_REASON)
+
+
+def _tcp_peer_hex(ip: str, port: int) -> str:
+    """How /proc/net/tcp writes a remote address: IPv4 bytes reversed, hex."""
+    a, b, c, d = (int(x) for x in ip.split("."))
+    return f"{d:02X}{c:02X}{b:02X}{a:02X}:{port:04X}"
+
+
+def another_client_connected(gateway: str, port: int = PORT, proc_path: str = "/proc/net/tcp") -> bool:
+    """True if some process on this machine already holds an ESTABLISHED
+    connection to the phone. The daemon is a background fallback for the
+    login screen: once the user's GUI client has the phone, the daemon
+    must stay out of the way. The phone gives the newest connection the
+    session, so a daemon that connected anyway would kick the GUI every
+    time it retried. Called only while the daemon has no connection of its
+    own, so any hit belongs to someone else. Reads the kernel table
+    directly (no external tools); any error means "not busy", so a quirk
+    here can never lock the login screen out.
+    """
+    try:
+        want = _tcp_peer_hex(gateway, port)
+        with open(proc_path) as f:
+            next(f, None)  # header
+            for line in f:
+                fields = line.split()
+                if len(fields) > 3 and fields[2] == want and fields[3] == "01":
+                    return True
+    except (OSError, ValueError):
+        pass
+    return False
 
 
 async def _watch_gateway(gateway: str) -> None:
@@ -221,9 +258,16 @@ async def run_forever() -> None:
     try:
         while True:
             gateway = find_tether_gateway()
+            busy = False
             if gateway:
+                busy = await asyncio.get_running_loop().run_in_executor(
+                    None, another_client_connected, gateway
+                )
+            if gateway and not busy:
                 try:
                     await relay_until_cable_changes(backend, gateway)
+                except SessionReplaced:
+                    print("[login-daemon] a user session took over the phone, standing by")
                 except (OSError, websockets.exceptions.WebSocketException) as exc:
                     print(f"[login-daemon] connection attempt to ws://{gateway}:{PORT} failed: {exc}")
             await asyncio.sleep(RETRY_SECONDS)

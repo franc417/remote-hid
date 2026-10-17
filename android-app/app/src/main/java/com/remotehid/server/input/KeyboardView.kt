@@ -2,24 +2,38 @@ package com.remotehid.server.input
 
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.util.AttributeSet
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 
-private val KEY_COLOR = Color.parseColor("#1E1E1E")
-private val KEY_PRESSED_COLOR = Color.parseColor("#333333")
-private val MODIFIER_COLOR = Color.parseColor("#4A4A4A")
-private val MODIFIER_PRESSED_COLOR = Color.parseColor("#5E5E5E")
-private val ARMED_COLOR = Color.parseColor("#E8E8E8")
-private val ARMED_PRESSED_COLOR = Color.parseColor("#D0D0D0")
-private const val TEXT_COLOR_LIGHT = Color.WHITE
-private const val TEXT_COLOR_DARK = Color.BLACK
-private const val ROW_HEIGHT_DP = 56f
+// Palette: near-black surfaces, hairline borders, one light "armed" state.
+private val BOARD_COLOR = Color.parseColor("#0B0B0C")
+private val DIVIDER_COLOR = Color.parseColor("#1F1F23")
+private val KEY_COLOR = Color.parseColor("#1A1A1D")
+private val KEY_PRESSED_COLOR = Color.parseColor("#2E2E34")
+private val MODIFIER_COLOR = Color.parseColor("#141416")
+private val MODIFIER_PRESSED_COLOR = Color.parseColor("#2A2A30")
+private val ARMED_COLOR = Color.parseColor("#EDEDED")
+private val ARMED_PRESSED_COLOR = Color.parseColor("#D2D2D6")
+private val BORDER_COLOR = Color.parseColor("#2B2B30")
+private val BORDER_PRESSED_COLOR = Color.parseColor("#55555E")
+private val TEXT_COLOR_LIGHT = Color.parseColor("#EDEDED")
+private val TEXT_COLOR_DARK = Color.parseColor("#0B0B0C")
+private const val ROW_HEIGHT_DP = 52f
+private const val KEY_RADIUS_DP = 10f
+private const val KEY_MARGIN_DP = 3f
+private const val BOARD_PADDING_DP = 4f
 private const val KEY_TEXT_SP = 17f
+private const val WORD_TEXT_SP = 12f  // multi-character labels: esc, ctrl, space, PgUp, F10...
+private const val PRESS_SCALE = 0.95f
 private const val PREVIEW_MAX_CHARS = 200
 
 // US QWERTY shift-symbol mapping, for the typing preview only.
@@ -99,8 +113,12 @@ class KeyboardView @JvmOverloads constructor(
 
     private val previewBuffer = StringBuilder()
 
-    private val keyRadiusPx = 8f * resources.displayMetrics.density
-    private val rowHeightPx = (ROW_HEIGHT_DP * resources.displayMetrics.density).toInt()
+    private val density = resources.displayMetrics.density
+    private val keyRadiusPx = KEY_RADIUS_DP * density
+    private val rowHeightPx = (ROW_HEIGHT_DP * density).toInt()
+    private val keyMarginPx = (KEY_MARGIN_DP * density).toInt()
+    private val strokePx = maxOf(1, density.toInt())
+    private val keyTypeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
 
     private val armedMods = mutableSetOf<String>()
     private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
@@ -116,7 +134,18 @@ class KeyboardView @JvmOverloads constructor(
 
     init {
         orientation = VERTICAL
-        setBackgroundColor(Color.BLACK)
+        setBackgroundColor(BOARD_COLOR)
+        val pad = (BOARD_PADDING_DP * density).toInt()
+        setPadding(pad, 0, pad, pad)
+        clipToPadding = false  // lets the divider below run edge to edge through the padding
+
+        // Hairline between the trackpad and the keys.
+        addView(View(context).apply {
+            setBackgroundColor(DIVIDER_COLOR)
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, strokePx).apply {
+                setMargins(-pad, 0, -pad, pad)
+            }
+        })
 
         addRow(digitsRow())
         addRow(qwertyRow())
@@ -218,16 +247,28 @@ class KeyboardView @JvmOverloads constructor(
         val restPressedColor = if (isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
         val view = TextView(context).apply {
-            text = key.label
             gravity = Gravity.CENTER
-            textSize = KEY_TEXT_SP
+            typeface = keyTypeface
             layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-                setMargins(3, 3, 3, 3)
+                setMargins(keyMarginPx, keyMarginPx, keyMarginPx, keyMarginPx)
             }
         }
+        applyLabel(view, key.label)
         style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
 
+        // A small press-in on touch. Returns false so the click below still fires.
+        view.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    v.animate().scaleX(PRESS_SCALE).scaleY(PRESS_SCALE).setDuration(50).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+            }
+            false
+        }
+
         view.setOnClickListener {
+            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             when {
                 key.code == "fn" -> toggleFn()
                 key.code == "123" -> toggleSymbols()
@@ -256,10 +297,25 @@ class KeyboardView @JvmOverloads constructor(
         return view
     }
 
+    /** Single glyphs get the big size; multi-character labels (esc, PgUp, F10) a smaller one. */
+    private fun applyLabel(view: TextView, text: String) {
+        view.text = text
+        view.textSize = if (text.length > 1) WORD_TEXT_SP else KEY_TEXT_SP
+    }
+
     private fun style(view: TextView, restColor: Int, pressedColor: Int, textColor: Int) {
         view.setTextColor(textColor)
-        val normal = GradientDrawable().apply { setColor(restColor); cornerRadius = keyRadiusPx }
-        val pressed = GradientDrawable().apply { setColor(pressedColor); cornerRadius = keyRadiusPx }
+        val armed = restColor == ARMED_COLOR
+        val normal = GradientDrawable().apply {
+            setColor(restColor)
+            cornerRadius = keyRadiusPx
+            setStroke(strokePx, if (armed) ARMED_COLOR else BORDER_COLOR)
+        }
+        val pressed = GradientDrawable().apply {
+            setColor(pressedColor)
+            cornerRadius = keyRadiusPx
+            setStroke(strokePx, if (armed) ARMED_PRESSED_COLOR else BORDER_PRESSED_COLOR)
+        }
         view.background = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
             addState(intArrayOf(), normal)
@@ -308,11 +364,14 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun updateSwappableLabels() {
         for ((btnView, spec) in swappableKeys) {
-            btnView.text = when {
-                fnActive && spec.fnLabel != null -> spec.fnLabel
-                symbolsActive && spec.symbolLabel != null -> spec.symbolLabel
-                else -> spec.label
-            }
+            applyLabel(
+                btnView,
+                when {
+                    fnActive && spec.fnLabel != null -> spec.fnLabel
+                    symbolsActive && spec.symbolLabel != null -> spec.symbolLabel
+                    else -> spec.label
+                },
+            )
         }
     }
 

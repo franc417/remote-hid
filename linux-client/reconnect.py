@@ -118,3 +118,28 @@ def candidates(
             if uri not in order:
                 order.append(uri)
     return order
+
+
+def prioritize(
+    targets: List[str],
+    probe: Callable[[str, int, float], bool] = _tcp_open,
+    timeout: float = 0.8,
+) -> List[str]:
+    """Reorders ws:// targets so ones whose port answers right now come
+    first (original order kept within each group); unreachable ones stay at
+    the end rather than being dropped, since a phone that is just waking may
+    only answer on the real attempt. Probes run in parallel, so a round with
+    several stale remembered addresses (the USB gateway after the cable is
+    gone, an old Wi-Fi lease) costs under a second instead of one full
+    connect timeout per dead address."""
+    from urllib.parse import urlparse
+
+    def parts(uri: str):
+        u = urlparse(uri)
+        return u.hostname or "", u.port or PHONE_PORT
+
+    if len(targets) < 2:
+        return list(targets)
+    with ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
+        ok = list(pool.map(lambda t: probe(*parts(t), timeout), targets))
+    return [t for t, up in zip(targets, ok) if up] + [t for t, up in zip(targets, ok) if not up]

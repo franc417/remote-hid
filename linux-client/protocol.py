@@ -16,6 +16,17 @@ VALID_KEY_ACTIONS = {"down", "up"}
 VALID_MODIFIERS = {"ctrl", "alt", "shift", "meta"}
 
 
+# The phone closes an older desktop session with this exact reason when a
+# newer one connects (WsServer.kt must use the same text). A client that
+# sees it knows it was taken over deliberately, not dropped by the network,
+# and must NOT auto-reconnect, or two desktops would fight over one phone.
+REPLACED_REASON = "replaced by a newer connection"
+
+
+class SessionReplaced(Exception):
+    """The phone handed this session to a newer connection."""
+
+
 class ProtocolError(ValueError):
     """Raised when an incoming message fails validation."""
 

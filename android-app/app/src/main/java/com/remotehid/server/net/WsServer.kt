@@ -13,6 +13,9 @@ import java.util.concurrent.Executors
 
 private const val TAG = "WsServer"
 
+/** Must match REPLACED_REASON in linux-client/protocol.py: clients use it to tell a deliberate takeover from a network drop. */
+const val REPLACED_REASON = "replaced by a newer connection"
+
 /**
  * Embedded WebSocket server. Runs on the phone; the desktop client
  * connects to it. Each incoming frame is decoded as JSON, validated
@@ -46,6 +49,11 @@ class WsServer(
     // thread-creation overhead on every touch-move event.
     private val sendExecutor = Executors.newSingleThreadExecutor()
 
+    // Closing a replaced socket writes a close frame to a link that may be
+    // dead. That must never block the NEW connection's thread (onOpen) or
+    // the in-order send queue, so it gets its own thread.
+    private val closeExecutor = Executors.newSingleThreadExecutor()
+
     /** Sends a message to the currently connected desktop client, if any. */
     fun sendToClient(json: String) {
         sendExecutor.execute {
@@ -65,6 +73,7 @@ class WsServer(
     override fun stop() {
         super.stop()
         sendExecutor.shutdown()
+        closeExecutor.shutdown()
     }
 
     override fun serveHttp(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -84,10 +93,12 @@ class WsServer(
                 val previous = activeSocket
                 activeSocket = this
                 if (previous != null && previous !== this) {
-                    try {
-                        previous.close(WebSocketFrame.CloseCode.GoingAway, "replaced by a newer connection", false)
-                    } catch (e: IOException) {
-                        Log.w(TAG, "closing the replaced connection failed: ${e.message}")
+                    closeExecutor.execute {
+                        try {
+                            previous.close(WebSocketFrame.CloseCode.GoingAway, REPLACED_REASON, false)
+                        } catch (e: IOException) {
+                            Log.w(TAG, "closing the replaced connection failed: ${e.message}")
+                        }
                     }
                 }
                 Log.i(TAG, "client connected")

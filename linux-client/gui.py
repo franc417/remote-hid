@@ -21,7 +21,8 @@ from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
-from reconnect import backoff_delay, candidates, load_known, remember, scan_subnet
+from protocol import SessionReplaced
+from reconnect import backoff_delay, candidates, load_known, prioritize, remember, scan_subnet
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
 RENDEZVOUS_PORT = 8766
@@ -80,14 +81,26 @@ def is_valid_ws_uri(uri: str) -> bool:
     return parsed.scheme in ("ws", "wss") and bool(parsed.hostname)
 
 
+class Session:
+    """State of ONE connection thread. Kept per session (not on App) so that
+    when a new connection replaces an old one -- scanning a different phone,
+    pressing Connect again -- the old thread winding down can't cancel the
+    new one's task, reset its button, or overwrite its status. Messages the
+    thread posts carry its Session; the GUI ignores any from a stale one."""
+
+    def __init__(self):
+        self.stop = threading.Event()  # set to end this session's reconnect loop, not just one attempt
+        self.loop = None
+        self.task = None
+        self.target = None  # the address actually connected, once it is
+
+
 class App:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.loop = None
-        self.task = None
+        self.session = None
         self.thread = None
         self.connected = False
-        self._stop = threading.Event()  # set by disconnect(): ends the reconnect loop, not just one attempt
         self.auto_reconnect = True
 
         root.title("remote-hid")
@@ -166,16 +179,23 @@ class App:
     def _poll_queue(self):
         try:
             while True:
-                kind, payload = self.status_queue.get_nowait()
+                kind, payload, sess = self.status_queue.get_nowait()
+                if sess is not None and sess is not self.session:
+                    continue  # from a connection that has since been replaced
                 if kind == "status":
                     self.status_var.set(payload)
                 elif kind == "reset_button":
                     self.connected = False
                     self.connect_button.config(text="Connect")
                 elif kind == "announced_uri":
+                    current = self.session.target if self.session else None
+                    if self.connected and payload == current:
+                        continue  # scanned the phone we are already connected to
                     self.uri_var.set(payload)
-                    if not self.connected:
-                        self.connect()
+                    # Connected to a different phone (or still connecting):
+                    # scanning another one means "switch", so connect()
+                    # ends the old session cleanly first.
+                    self.connect()
         except queue.Empty:
             pass
         self._poll_job = self.root.after(100, self._poll_queue)
@@ -200,7 +220,7 @@ class App:
             srv.bind(("0.0.0.0", RENDEZVOUS_PORT))
             srv.listen(1)
         except OSError as exc:
-            self.status_queue.put(("status", f"Rendezvous listener failed: {exc}"))
+            self.status_queue.put(("status", f"Rendezvous listener failed: {exc}", None))
             return
 
         while True:
@@ -211,7 +231,7 @@ class App:
             with conn:
                 data = conn.recv(200).decode("utf-8", errors="replace").strip()
             if data.startswith("ws://") or data.startswith("wss://"):
-                self.status_queue.put(("announced_uri", data))
+                self.status_queue.put(("announced_uri", data, None))
 
     def toggle(self):
         if self.connected:
@@ -237,32 +257,47 @@ class App:
         if not is_valid_ws_uri(uri):
             self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765")
             return
+        self._end_session()  # switching phones / reconnecting: drop the old one cleanly first
+        session = Session()
+        self.session = session
         self.connected = True
-        self._stop.clear()
         self.connect_button.config(text="Disconnect")
         self.status_var.set("Connecting...")
-        self.thread = threading.Thread(target=self._run, args=(uri, persistent), daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(uri, persistent, session), daemon=True)
         self.thread.start()
 
+    def _end_session(self):
+        """Stops the current session's reconnect loop and cancels whatever
+        connection attempt or live connection it has. Safe if there is none."""
+        old = self.session
+        if old is None:
+            return
+        old.stop.set()
+        if old.loop is not None and old.task is not None:
+            try:
+                old.loop.call_soon_threadsafe(old.task.cancel)
+            except RuntimeError:
+                pass  # its loop already finished: nothing left to cancel
+
     def disconnect(self):
-        self._stop.set()
-        if self.loop and self.task:
-            self.loop.call_soon_threadsafe(self.task.cancel)
+        self._end_session()
         self.connected = False
         self.connect_button.config(text="Connect")
 
-    def _set_status(self, text: str):
-        self.status_queue.put(("status", text))
+    def _set_status(self, text: str, session: "Session"):
+        self.status_queue.put(("status", text, session))
 
-    def _run(self, uri: str, persistent: bool = False):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+    def _run(self, uri: str, persistent: bool = False, session: "Session" = None):
+        session = session or Session()
+        session.loop = asyncio.new_event_loop()
+        loop = session.loop
+        asyncio.set_event_loop(loop)
 
         try:
             backend = UinputBackend()
         except Exception as exc:
-            self.status_queue.put(("status", f"Input backend failed: {exc}"))
-            self.status_queue.put(("reset_button", None))
+            self.status_queue.put(("status", f"Input backend failed: {exc}", session))
+            self.status_queue.put(("reset_button", None, session))
             return
 
         def scan():
@@ -277,31 +312,46 @@ class App:
         attempt = 0
         ever_connected = False
         reason = ""
+        replaced = False
         try:
             while True:
                 connected_here = False
                 targets = candidates(primary, load_known(known_path(), CONFIG_PATH), attempt,
                                      scan if self.auto_reconnect else None)
+                if persistent or attempt > 0 or ever_connected:
+                    # Retry rounds: put addresses that answer right now first, so a
+                    # stale one (USB gateway after the cable is gone, an old lease)
+                    # does not cost a connect timeout before the live one is tried.
+                    targets = prioritize(targets)
                 for target in targets:
-                    if self._stop.is_set():
+                    if session.stop.is_set():
                         break
                     state = {"up": False}
 
                     def on_status(text, target=target, state=state):
                         if text.startswith("Connected"):
                             state["up"] = True
+                            session.target = target
                             remember(target, known_path(), CONFIG_PATH)  # only a phone that really connected
-                        self._set_status(text)
+                        self._set_status(text, session)
 
-                    self.task = self.loop.create_task(run_client(target, backend, on_status=on_status))
+                    session.task = loop.create_task(run_client(target, backend, on_status=on_status))
                     try:
-                        self.loop.run_until_complete(self.task)
+                        loop.run_until_complete(session.task)
                     except asyncio.CancelledError:
-                        self._stop.set()
-                        self.status_queue.put(("status", "Disconnected"))
+                        session.stop.set()
+                        self.status_queue.put(("status", "Disconnected", session))
+                    except SessionReplaced:
+                        # The phone gave our session to a newer connection (another
+                        # desktop, or a scan from another window). Reconnecting would
+                        # just take it back and the two would fight, so stop here and
+                        # say why; Connect takes it back on purpose.
+                        replaced = True
+                        session.stop.set()
+                        self.status_queue.put(("status", "Another device took over this phone. Press Connect to take it back.", session))
                     except OSError as exc:
                         reason = f"Could not connect: {exc}"
-                        self.status_queue.put(("status", reason))
+                        self.status_queue.put(("status", reason, session))
                     except Exception as exc:
                         # Deliberately broad: this is the fix for a real, observed
                         # bug. websockets.exceptions.ConnectionClosedError (phone
@@ -316,29 +366,29 @@ class App:
                         # now updates status to something true, not just the two
                         # anticipated ones.
                         reason = f"Connection lost: {exc}"
-                        self.status_queue.put(("status", reason))
+                        self.status_queue.put(("status", reason, session))
                     if state["up"]:
                         ever_connected = connected_here = True
                         primary = target  # the one that worked leads the next round
                         break
-                    if self._stop.is_set():
+                    if session.stop.is_set():
                         break
 
-                if self._stop.is_set() or not self.auto_reconnect or not (persistent or ever_connected):
+                if session.stop.is_set() or not self.auto_reconnect or not (persistent or ever_connected):
                     break
                 if connected_here:
                     attempt = 0
                 delay = backoff_delay(attempt)
                 attempt += 1
                 prefix = f"{reason}. " if reason else "Connection closed. "
-                self.status_queue.put(("status", f"{prefix}Retrying in {delay:.0f}s..."))
-                if self._stop.wait(delay):
+                self.status_queue.put(("status", f"{prefix}Retrying in {delay:.0f}s...", session))
+                if session.stop.wait(delay):
                     break
-            if self._stop.is_set():
-                self.status_queue.put(("status", "Disconnected"))
+            if session.stop.is_set() and not replaced:
+                self.status_queue.put(("status", "Disconnected", session))
         finally:
             backend.close()
-            self.status_queue.put(("reset_button", None))
+            self.status_queue.put(("reset_button", None, session))
 
     def _on_close(self):
         if self.connected:

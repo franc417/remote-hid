@@ -93,3 +93,18 @@ def test_scan_only_kicks_in_after_enough_failed_rounds():
     assert scans == []  # not even called early: a scan is noisy
     assert reconnect.candidates(None, known, reconnect.SCAN_AFTER_ATTEMPTS, scan) == ["ws://a:8765", "ws://new:8765"]
     assert scans == [1]
+
+
+def test_prioritize_puts_live_addresses_first_and_keeps_dead_ones_last():
+    live = {"192.168.1.9"}
+    probe = lambda host, port, timeout: host in live
+    out = reconnect.prioritize(
+        ["ws://10.98.4.1:8765", "ws://192.168.1.9:8765", "ws://192.168.1.4:8765"], probe=probe)
+    assert out == ["ws://192.168.1.9:8765", "ws://10.98.4.1:8765", "ws://192.168.1.4:8765"]
+
+
+def test_prioritize_keeps_order_within_each_group_and_handles_tiny_inputs():
+    probe = lambda host, port, timeout: True
+    assert reconnect.prioritize(["ws://a:1", "ws://b:2"], probe=probe) == ["ws://a:1", "ws://b:2"]
+    assert reconnect.prioritize([], probe=probe) == []
+    assert reconnect.prioritize(["ws://a:1"], probe=probe) == ["ws://a:1"]

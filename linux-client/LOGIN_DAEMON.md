@@ -123,3 +123,16 @@ test_login_daemon.py`); whether the whole chain actually works on a
 real machine, with a real phone, at a real login screen, is only
 knowable by trying it — there's no USB tethering hardware or way to
 simulate it in the environment this was written in.
+
+## Coexisting with the desktop app, and unplugging
+
+- **Stands aside for a logged-in session.** The phone gives the newest
+  connection the session. The daemon only connects when no other process on
+  this machine already holds a connection to the phone (it reads
+  `/proc/net/tcp`), so it never kicks the GUI. If the GUI connects later it
+  takes the phone from the daemon; the daemon notices and waits. When the GUI
+  closes (e.g. logout) the daemon takes the phone back within a second or two.
+- **Unplug / replug.** A pulled cable never closes the TCP connection, so the
+  daemon pings every 5s (5s timeout) and also watches the tether gateway: when
+  it disappears or changes, the session is dropped at once and the daemon
+  picks up the new interface. Both used to wait ten minutes.

@@ -1,26 +1,26 @@
 package com.remotehid.server.input
 
 import android.content.Context
-import android.graphics.BlurMaskFilter
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.abs
-import kotlin.math.cos
-import kotlin.math.sin
+import kotlin.math.max
 
 private const val TAP_MOVE_THRESHOLD_PX = 12f
 private const val TAP_MAX_DURATION_MS = 200L
 private const val SCROLL_DIVISOR = 4f
-private const val HEX_COUNT = 3
-private const val HEX_RADIUS_PX = 16f
-private const val ORBIT_RADIUS_PX = 34f
-private const val ORBIT_DEGREES_PER_MS = 0.09f
-private const val RELEASE_FADE_MS = 250L
+private const val RELEASE_FADE_MS = 220L
+private const val RIPPLE_MS = 300L
+private const val MAX_TRACKED_POINTERS = 3
 private const val DOUBLE_TAP_WINDOW_MS = 300L
 private const val DOUBLE_TAP_DISTANCE_PX = 50f
 private const val THREE_FINGER_THRESHOLD_PX = 70f
@@ -50,8 +50,13 @@ private const val THREE_FINGER_THRESHOLD_PX = 70f
  *   assumption than the horizontal one — easy to change if it's not
  *   the right direction.
  *
- * Also draws a small cluster of glowing hexagons orbiting the live
- * touch point — purely visual, doesn't affect what gets sent.
+ * Visuals (purely cosmetic, never affect what gets sent): a recessed
+ * panel with a faint dot grid, a thin ring + centre dot under each
+ * finger (a brighter fill while a click-drag is held), and a short
+ * ripple on a tap. All hardware-accelerated plain drawing: the earlier
+ * glowing-hexagon effect needed a software layer and a blur mask,
+ * which re-rasterised the whole view on the CPU every frame while the
+ * finger was moving.
  *
  * Emits already protocol-shaped messages (as Map<String, Any?>) via
  * onEvent — this view knows nothing about WebSockets or JSON.
@@ -86,24 +91,85 @@ class TrackpadView @JvmOverloads constructor(
     private var threeFingerTriggered = false
 
     private var touching = false
-    private var touchX = 0f
-    private var touchY = 0f
     private var releasedAt = 0L
 
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 5f
-        color = Color.WHITE
-        maskFilter = BlurMaskFilter(14f, BlurMaskFilter.Blur.NORMAL)
+    // Visual-only copies of where the fingers are (gesture logic above
+    // never reads these).
+    private val ptX = FloatArray(MAX_TRACKED_POINTERS)
+    private val ptY = FloatArray(MAX_TRACKED_POINTERS)
+    private var ptCount = 0
+
+    private var rippleX = 0f
+    private var rippleY = 0f
+    private var rippleStart = 0L
+
+    private val density = resources.displayMetrics.density
+    private fun dp(v: Float) = v * density
+
+    private val panelRect = RectF()
+    private val panelRadius = dp(18f)
+    private val panelInset = dp(8f)
+
+    private val panelFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.parseColor("#111113")
     }
-    private val corePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val panelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2.5f
+        strokeWidth = dp(1f)
+        color = Color.parseColor("#2B2B30")
+    }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.5f)
         color = Color.WHITE
+    }
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        textSize = dp(13f)
+        letterSpacing = 0.18f
+        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    }
+    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        textSize = dp(11f)
+        letterSpacing = 0.04f
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
     }
 
     init {
-        setLayerType(LAYER_TYPE_SOFTWARE, null)
+        // A faint dot grid, built once as a tiny tile and repeated by a
+        // shader, so drawing it costs one fill per frame.
+        val tilePx = max(1, dp(22f).toInt())
+        val tile = Bitmap.createBitmap(tilePx, tilePx, Bitmap.Config.ARGB_8888)
+        val tileCanvas = Canvas(tile)
+        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; alpha = 26 }
+        tileCanvas.drawCircle(tilePx / 2f, tilePx / 2f, dp(1f), dot)
+        gridPaint.shader = BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        panelRect.set(panelInset, panelInset, w - panelInset, h - panelInset)
+    }
+
+    /** Copies finger positions for drawing only; `skip` leaves out a lifting pointer. */
+    private fun syncPointers(event: MotionEvent, skip: Int = -1) {
+        var n = 0
+        for (i in 0 until event.pointerCount) {
+            if (i == skip || n >= MAX_TRACKED_POINTERS) continue
+            ptX[n] = event.getX(i)
+            ptY[n] = event.getY(i)
+            n++
+        }
+        ptCount = n
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -115,8 +181,7 @@ class TrackpadView @JvmOverloads constructor(
                 totalMovement = 0f
                 usedMultitouch = false
                 touching = true
-                touchX = event.x
-                touchY = event.y
+                syncPointers(event)
 
                 val dt = event.eventTime - lastReleaseTime
                 val ddx = event.x - lastReleaseX
@@ -129,6 +194,7 @@ class TrackpadView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_POINTER_DOWN -> {
+                syncPointers(event)
                 usedMultitouch = true
                 dragArmed = false
                 if (event.pointerCount == 2) {
@@ -140,7 +206,13 @@ class TrackpadView @JvmOverloads constructor(
                 }
             }
 
+            MotionEvent.ACTION_POINTER_UP -> {
+                syncPointers(event, skip = event.actionIndex)
+                postInvalidateOnAnimation()
+            }
+
             MotionEvent.ACTION_MOVE -> {
+                syncPointers(event)
                 when (event.pointerCount) {
                     3 -> handleThreeFingerSwipe(event)
                     2 -> {
@@ -150,8 +222,6 @@ class TrackpadView @JvmOverloads constructor(
                             onEvent?.invoke(mapOf("t" to "scroll", "dy" to (dy / SCROLL_DIVISOR)))
                         }
                         lastTwoFingerY = y
-                        touchX = averageX(event)
-                        touchY = y
                     }
                     else -> {
                         val dx = event.x - lastX
@@ -168,8 +238,6 @@ class TrackpadView @JvmOverloads constructor(
                         }
                         lastX = event.x
                         lastY = event.y
-                        touchX = event.x
-                        touchY = event.y
                     }
                 }
                 postInvalidateOnAnimation()
@@ -183,6 +251,9 @@ class TrackpadView @JvmOverloads constructor(
                     !usedMultitouch && totalMovement < TAP_MOVE_THRESHOLD_PX && duration < TAP_MAX_DURATION_MS
                 ) {
                     onEvent?.invoke(mapOf("t" to "click", "button" to "left"))
+                    rippleX = event.x
+                    rippleY = event.y
+                    rippleStart = System.currentTimeMillis()
                 }
                 if (!usedMultitouch) {
                     lastReleaseTime = event.eventTime
@@ -239,41 +310,63 @@ class TrackpadView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val now = System.currentTimeMillis()
 
-        val alphaFraction = if (touching) {
+        // Recessed panel with the dot grid.
+        canvas.drawRoundRect(panelRect, panelRadius, panelRadius, panelFill)
+        canvas.drawRoundRect(panelRect, panelRadius, panelRadius, gridPaint)
+        canvas.drawRoundRect(panelRect, panelRadius, panelRadius, panelStroke)
+
+        // 1 while a finger is down, then fades to 0 after release.
+        val presence = if (touching) {
             1f
         } else {
-            val sinceRelease = System.currentTimeMillis() - releasedAt
-            if (sinceRelease >= RELEASE_FADE_MS) 0f else 1f - (sinceRelease.toFloat() / RELEASE_FADE_MS)
-        }
-        if (alphaFraction <= 0f) return
-
-        val rotation = (System.currentTimeMillis() % 100000L) * ORBIT_DEGREES_PER_MS
-        for (i in 0 until HEX_COUNT) {
-            val angle = Math.toRadians((rotation + i * (360f / HEX_COUNT)).toDouble())
-            val cx = touchX + ORBIT_RADIUS_PX * cos(angle).toFloat()
-            val cy = touchY + ORBIT_RADIUS_PX * sin(angle).toFloat()
-            val path = hexagonPath(cx, cy, HEX_RADIUS_PX)
-            glowPaint.alpha = (180 * alphaFraction).toInt()
-            corePaint.alpha = (255 * alphaFraction).toInt()
-            canvas.drawPath(path, glowPaint)
-            canvas.drawPath(path, corePaint)
+            val since = now - releasedAt
+            if (since >= RELEASE_FADE_MS) 0f else 1f - since.toFloat() / RELEASE_FADE_MS
         }
 
-        if (touching || alphaFraction > 0f) {
+        // Idle hint, fading out as soon as a finger lands.
+        val hintAlpha = 1f - presence
+        if (hintAlpha > 0f) {
+            val cx = panelRect.centerX()
+            val cy = panelRect.centerY()
+            titlePaint.alpha = (70 * hintAlpha).toInt()
+            hintPaint.alpha = (46 * hintAlpha).toInt()
+            canvas.drawText("TRACKPAD", cx, cy, titlePaint)
+            canvas.drawText(
+                "tap  \u00B7  drag  \u00B7  two-finger scroll  \u00B7  three-finger swipe",
+                cx, cy + dp(24f), hintPaint,
+            )
+        }
+
+        // A ring and centre dot under each finger; the fill is brighter
+        // while a click-drag is being held so "pressed" is visible.
+        if (presence > 0f) {
+            val ringRadius = dp(22f)
+            val fillAlpha = if (dragActive) 70 else 26
+            for (i in 0 until ptCount) {
+                fillPaint.alpha = (fillAlpha * presence).toInt()
+                canvas.drawCircle(ptX[i], ptY[i], ringRadius, fillPaint)
+                ringPaint.alpha = (210 * presence).toInt()
+                canvas.drawCircle(ptX[i], ptY[i], ringRadius, ringPaint)
+                fillPaint.alpha = (255 * presence).toInt()
+                canvas.drawCircle(ptX[i], ptY[i], dp(3f), fillPaint)
+            }
+        }
+
+        // Tap ripple: a ring that expands and fades.
+        val rippleAge = now - rippleStart
+        val rippleActive = rippleStart != 0L && rippleAge in 0 until RIPPLE_MS
+        if (rippleActive) {
+            val p = rippleAge.toFloat() / RIPPLE_MS
+            val eased = 1f - (1f - p) * (1f - p)
+            ringPaint.alpha = (150 * (1f - p)).toInt()
+            canvas.drawCircle(rippleX, rippleY, dp(14f) + dp(30f) * eased, ringPaint)
+        }
+
+        // Only keep redrawing while something is actually animating.
+        if (touching || presence > 0f || rippleActive) {
             postInvalidateOnAnimation()
         }
-    }
-
-    private fun hexagonPath(cx: Float, cy: Float, radius: Float): Path {
-        val path = Path()
-        for (i in 0 until 6) {
-            val angle = Math.toRadians((60 * i - 30).toDouble())
-            val x = cx + radius * cos(angle).toFloat()
-            val y = cy + radius * sin(angle).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-        return path
     }
 }
