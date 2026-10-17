@@ -111,6 +111,14 @@ class RemoteHidService : Service() {
         }
     }
 
+    fun sendMove(dx: Float, dy: Float) {
+        server?.sendMove(dx, dy)
+    }
+
+    fun sendScroll(dy: Float) {
+        server?.sendScroll(dy)
+    }
+
     fun sendToClient(json: String) {
         server?.sendToClient(json)
     }

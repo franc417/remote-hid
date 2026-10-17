@@ -104,6 +104,7 @@ async def run_client(uri: str, backend, on_status=None) -> None:
         ping_timeout=PING_TIMEOUT,
         open_timeout=OPEN_TIMEOUT,
         close_timeout=CLOSE_TIMEOUT,
+        compression=None,  # tiny frames: deflate only adds latency and CPU
     ) as ws:
         print(f"[client] connected to {uri}")
         if on_status:

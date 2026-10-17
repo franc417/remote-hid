@@ -7,7 +7,39 @@ the codebase (and its tests) can run on machines without evdev installed
 or without /dev/uinput access.
 """
 
+import os
 from abc import ABC, abstractmethod
+
+
+def _env_float(name: str, default: float) -> float:
+    """Tuning knob from the environment; a typo falls back to the default
+    rather than breaking input."""
+    try:
+        value = float(os.environ.get(name, default))
+        return value if value > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+class Carry:
+    """Turns fractional deltas into whole counts without losing the rest.
+
+    The phone sends fractional pixel deltas (0.7, 0.3, ...). The kernel only
+    takes whole counts, and plain int() truncates toward zero, so a slow
+    drag made of sub-pixel steps produced NO movement at all and a fast one
+    lost up to a count per event: the cursor felt sluggish and "stuck" at low
+    speed. Keeping the remainder and adding it to the next delta makes the
+    total distance exact.
+    """
+
+    def __init__(self) -> None:
+        self._rest = 0.0
+
+    def take(self, value: float) -> int:
+        total = self._rest + value
+        whole = int(total)  # toward zero, so the remainder keeps the sign
+        self._rest = total - whole
+        return whole
 
 
 class InputBackend(ABC):
@@ -106,8 +138,16 @@ class UinputBackend(InputBackend):
         from evdev import ecodes as e
 
         self._e = e
+        # REL_WHEEL_HI_RES (120 units per notch) is what lets libinput scroll
+        # smoothly instead of in whole notches; older python-evdev/kernels
+        # lack it, in which case scrolling falls back to notches with carry.
+        self._hi_res = getattr(e, "REL_WHEEL_HI_RES", None)
+        rel_axes = [e.REL_X, e.REL_Y, e.REL_WHEEL]
+        if self._hi_res is not None:
+            rel_axes.append(self._hi_res)
+        self._init_motion()
         capabilities = {
-            e.EV_REL: [e.REL_X, e.REL_Y, e.REL_WHEEL],
+            e.EV_REL: rel_axes,
             e.EV_KEY: (
                 [e.BTN_LEFT, e.BTN_RIGHT, e.BTN_MIDDLE]
                 + [getattr(e, name) for name in KEY_MAP.values()]
@@ -116,10 +156,22 @@ class UinputBackend(InputBackend):
         }
         self._ui = evdev.UInput(capabilities, name="remote-hid-virtual-input")
 
+    def _init_motion(self):
+        self._sensitivity = _env_float("REMOTE_HID_SENSITIVITY", 1.0)
+        self._scroll_scale = _env_float("REMOTE_HID_SCROLL_SCALE", 1.0)
+        self._x, self._y = Carry(), Carry()
+        self._wheel_hi, self._wheel_notch = Carry(), Carry()
+
     def move(self, dx, dy):
         e = self._e
-        self._ui.write(e.EV_REL, e.REL_X, int(dx))
-        self._ui.write(e.EV_REL, e.REL_Y, int(dy))
+        ix = self._x.take(dx * self._sensitivity)
+        iy = self._y.take(dy * self._sensitivity)
+        if ix == 0 and iy == 0:
+            return  # still accumulating a sub-count: nothing to send yet
+        if ix:
+            self._ui.write(e.EV_REL, e.REL_X, ix)
+        if iy:
+            self._ui.write(e.EV_REL, e.REL_Y, iy)
         self._ui.syn()
 
     def click(self, button, action="click"):
@@ -138,7 +190,23 @@ class UinputBackend(InputBackend):
 
     def scroll(self, dy):
         e = self._e
-        self._ui.write(e.EV_REL, e.REL_WHEEL, int(dy))
+        units = dy * self._scroll_scale  # 1.0 unit == one wheel notch
+        if self._hi_res is not None:
+            hi = self._wheel_hi.take(units * 120)
+            if hi == 0:
+                return
+            self._ui.write(e.EV_REL, self._hi_res, hi)
+            # Kernel convention: also emit the legacy whole-notch event each
+            # time 120 hi-res units have accumulated; libinput uses the
+            # hi-res axis when it exists and ignores this one.
+            notch = self._wheel_notch.take(hi / 120.0)
+            if notch:
+                self._ui.write(e.EV_REL, e.REL_WHEEL, notch)
+        else:
+            notch = self._wheel_notch.take(units)
+            if notch == 0:
+                return
+            self._ui.write(e.EV_REL, e.REL_WHEEL, notch)
         self._ui.syn()
 
     def key(self, code, action, mods):

@@ -87,7 +87,15 @@ class MainActivity : AppCompatActivity() {
 
         statusText.text = getString(R.string.status_idle)
 
-        trackpad.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
+        trackpad.onEvent = { event ->
+            // Motion goes through the coalescing path (see WsServer); every
+            // other event keeps its place in line behind pending motion.
+            when (event["t"]) {
+                "move" -> service?.sendMove((event["dx"] as Number).toFloat(), (event["dy"] as Number).toFloat())
+                "scroll" -> service?.sendScroll((event["dy"] as Number).toFloat())
+                else -> service?.sendToClient(mapToJson(event))
+            }
+        }
         keyboard.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
         keyboard.onPreviewTextChanged = { text ->
             if (text.isEmpty()) {

@@ -168,6 +168,7 @@ async def connect_and_relay(backend, uri: str) -> None:
         ping_timeout=PING_TIMEOUT,
         open_timeout=4,
         close_timeout=1,  # cancelling over a dead cable must not wait the 10s default
+        compression=None,  # tiny frames: deflate only adds latency and CPU
     ) as ws:
         print(f"[login-daemon] connected to {uri}")
         async for raw_frame in ws:

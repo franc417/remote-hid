@@ -9,6 +9,9 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
+import java.io.InputStream
+import java.net.Socket
+import java.net.SocketException
 import java.util.concurrent.Executors
 
 private const val TAG = "WsServer"
@@ -54,20 +57,96 @@ class WsServer(
     // the in-order send queue, so it gets its own thread.
     private val closeExecutor = Executors.newSingleThreadExecutor()
 
+    // Cursor and scroll deltas are additive, so when the network write is
+    // slower than the touch stream (Wi-Fi hiccup, 240Hz touch panel) they
+    // are summed here and sent as ONE message instead of queueing up. A
+    // queue would add its whole length to the cursor's lag; a sum arrives
+    // as fast as the link allows and loses nothing. When the link keeps
+    // up there is exactly one pending delta per message, so this adds no
+    // delay at all. Any other message (click, key) drains the pending
+    // motion first, so the order the user produced events in is preserved.
+    private val motionLock = Any()
+    private var pendingDx = 0f
+    private var pendingDy = 0f
+    private var pendingScroll = 0f
+    private var motionQueued = false
+
     /** Sends a message to the currently connected desktop client, if any. */
     fun sendToClient(json: String) {
         sendExecutor.execute {
-            val socket = activeSocket
-            if (socket == null) {
-                Log.w(TAG, "no client connected, dropping outbound message")
-                return@execute
-            }
-            try {
-                socket.send(json)
-            } catch (e: IOException) {
-                Log.w(TAG, "failed to send to client: ${e.message}")
-            }
+            flushMotion()
+            sendNow(json)
         }
+    }
+
+    /** Adds a cursor delta to be sent with the next write (see above). */
+    fun sendMove(dx: Float, dy: Float) {
+        synchronized(motionLock) {
+            pendingDx += dx
+            pendingDy += dy
+            if (motionQueued) return
+            motionQueued = true
+        }
+        sendExecutor.execute { flushMotion() }
+    }
+
+    /** Adds a scroll delta to be sent with the next write (see above). */
+    fun sendScroll(dy: Float) {
+        synchronized(motionLock) {
+            pendingScroll += dy
+            if (motionQueued) return
+            motionQueued = true
+        }
+        sendExecutor.execute { flushMotion() }
+    }
+
+    /** Runs on sendExecutor only: takes whatever motion has accumulated and sends it. */
+    private fun flushMotion() {
+        var dx = 0f
+        var dy = 0f
+        var scroll = 0f
+        synchronized(motionLock) {
+            dx = pendingDx
+            dy = pendingDy
+            scroll = pendingScroll
+            pendingDx = 0f
+            pendingDy = 0f
+            pendingScroll = 0f
+            motionQueued = false
+        }
+        if (dx != 0f || dy != 0f) sendNow("{\"t\":\"move\",\"dx\":$dx,\"dy\":$dy}")
+        if (scroll != 0f) sendNow("{\"t\":\"scroll\",\"dy\":$scroll}")
+    }
+
+    /** Runs on sendExecutor only. */
+    private fun sendNow(json: String) {
+        val socket = activeSocket
+        if (socket == null) {
+            Log.w(TAG, "no client connected, dropping outbound message")
+            return
+        }
+        try {
+            socket.send(json)
+        } catch (e: IOException) {
+            Log.w(TAG, "failed to send to client: ${e.message}")
+        }
+    }
+
+    /**
+     * Nagle's algorithm is on by default for accepted sockets. NanoWSD writes
+     * each frame as several tiny writes (header byte, length byte, payload),
+     * so with Nagle the later pieces wait for the ACK of the first, and the
+     * receiver's delayed ACK turns that into stalls of tens of milliseconds
+     * per frame: the cursor lags and moves in clumps. TCP_NODELAY sends every
+     * piece immediately.
+     */
+    override fun createClientHandler(finalAccept: Socket, inputStream: InputStream): NanoHTTPD.ClientHandler {
+        try {
+            finalAccept.tcpNoDelay = true
+        } catch (e: SocketException) {
+            Log.w(TAG, "could not set TCP_NODELAY: ${e.message}")
+        }
+        return super.createClientHandler(finalAccept, inputStream)
     }
 
     override fun stop() {
