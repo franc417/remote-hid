@@ -22,6 +22,19 @@
             android:textSize="13sp" />
 
         <TextView
+            android:id="@+id/layoutButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="layout"
+            android:textColor="#EDEDED"
+            android:textSize="12sp"
+            android:fontFamily="sans-serif-medium"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="8dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_chip" />
+
+        <TextView
             android:id="@+id/scanButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

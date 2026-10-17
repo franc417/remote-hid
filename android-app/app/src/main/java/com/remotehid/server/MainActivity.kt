@@ -23,6 +23,7 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.remotehid.server.input.KeyboardView
+import com.remotehid.server.input.LayoutText
 import com.remotehid.server.input.TrackpadView
 import com.remotehid.server.net.RemoteHidService
 import com.remotehid.server.protocol.mapToJson
@@ -30,6 +31,8 @@ import java.net.InetAddress
 import java.net.Socket
 
 private const val PORT = 8765
+
+private const val KEYBOARD_LAYOUT_PREF = "keyboard_layout_v1"
 
 class MainActivity : AppCompatActivity() {
 
@@ -39,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var keyboard: KeyboardView
     private lateinit var expandButton: TextView
     private lateinit var scanButton: TextView
+    private lateinit var layoutButton: TextView
     private lateinit var qrPreview: PreviewView
     private lateinit var typingPreview: TextView
     private var expanded = false
@@ -82,6 +86,7 @@ class MainActivity : AppCompatActivity() {
         keyboard = findViewById(R.id.keyboard)
         expandButton = findViewById(R.id.expandButton)
         scanButton = findViewById(R.id.scanButton)
+        layoutButton = findViewById(R.id.layoutButton)
         qrPreview = findViewById(R.id.qrPreview)
         typingPreview = findViewById(R.id.typingPreview)
 
@@ -108,6 +113,21 @@ class MainActivity : AppCompatActivity() {
 
         expandButton.setOnClickListener { toggleExpanded() }
         scanButton.setOnClickListener { toggleScan() }
+
+        // Keyboard layout: load the saved one (if it still parses), save after every edit.
+        val uiPrefs = getSharedPreferences("remote_hid_ui", Context.MODE_PRIVATE)
+        uiPrefs.getString(KEYBOARD_LAYOUT_PREF, null)?.let { saved ->
+            LayoutText.parse(saved).layout?.let { keyboard.setLayout(it) }
+        }
+        keyboard.onLayoutChanged = { layout ->
+            uiPrefs.edit().putString(KEYBOARD_LAYOUT_PREF, LayoutText.serialize(layout)).apply()
+        }
+        keyboard.onEditModeChanged = { editing -> layoutButton.text = if (editing) "done" else "layout" }
+        layoutButton.setOnClickListener {
+            if (inScanMode) stopScanning()
+            if (expanded) toggleExpanded()  // the keyboard has to be visible to edit it
+            keyboard.setEditMode(!keyboard.editMode)
+        }
 
         // Independent of this Activity's lifecycle — this is the fix for
         // a real bug where backgrounding the app (screen lock, switching

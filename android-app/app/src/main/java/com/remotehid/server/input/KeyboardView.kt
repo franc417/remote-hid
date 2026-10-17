@@ -1,5 +1,7 @@
 package com.remotehid.server.input
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
@@ -10,9 +12,13 @@ import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
+import kotlin.math.abs
 
 // Palette: near-black surfaces, hairline borders, one light "armed" state.
 private val BOARD_COLOR = Color.parseColor("#0B0B0C")
@@ -57,45 +63,28 @@ private val PUNCTUATION_CHARS = mapOf(
     "Backquote" to ("`" to "~"),
 )
 
-private data class KeySpec(
-    val label: String,
-    val code: String,
-    val sticky: Boolean = false,
-    val weight: Float = 1f,
-    val fnLabel: String? = null,
-    val fnCode: String? = null,
-    val symbolLabel: String? = null,
-    // Tier 1: a real physical key + forced mods (e.g. Shift+, = "<").
-    // 100% reliable — this is exactly what a physical keyboard sends.
-    val symbolCode: String? = null,
-    val symbolForcedMods: List<String> = emptyList(),
-    // Tier 2: no physical key exists for this character at all (€, π,
-    // ×, ...). Sent via the Ctrl+Shift+U Unicode-entry sequence, which
-    // depends on the receiving desktop using IBus (GNOME's default)
-    // and the focused app supporting it — best effort, not guaranteed
-    // the way every other key on this keyboard is.
-    val symbolUnicodeHex: String? = null,
-)
+private const val EDIT_BAR_HEIGHT_DP = 46f
+private const val RESIZE_ZONE_DP = 26f
+private const val WIDTH_STEP = 0.25f
+private const val HEIGHT_STEP = 0.1f
+private const val EDIT_HINT = "Tap a key to select it. Drag it to move it, drag its right edge to resize."
 
 /**
- * Full on-screen keyboard. Ctrl/Alt/Shift are sticky (tap to arm, next
- * key only, then cleared). Fn and 123 are persistent, mutually
- * exclusive toggles — Fn swaps the number row to F-keys and the arrow
- * cluster to Home/End/PageUp/PageDown; 123 swaps the *entire alphabet
- * block* to a symbol layer:
- * - Number row -> punctuation (. , ; ' / \ [ ] `) — real keys, had no
- *   UI access at all before.
- * - qwerty row -> the shifted variants of that same punctuation
- *   (< > : " ? | { } _) as dedicated single-tap keys — also real
- *   physical keys (Shift + the punctuation key above), just exposed
- *   directly instead of needing Shift armed separately first.
- * - asdf/zxcv rows -> characters with no physical key at all (currency,
- *   math symbols) via the Ctrl+Shift+U Unicode-entry sequence — see
- *   symbolUnicodeHex's doc comment above for the reliability caveat.
+ * Full on-screen keyboard, built from a LayoutDef (KeyboardLayout.kt): layers
+ * (letters, fn, the two symbol pages), rows, keys with widths. Ctrl/Alt/Shift
+ * are sticky (tap to arm, next key only, then cleared) and stay armed across
+ * layer switches. A key can switch layer (fn, 123, ABC, =\<); tapping the
+ * toggle for the layer you are on returns to the first layer.
  *
- * Row height is fixed (not stretched to fill available space) — see
+ * Row height is fixed per row (not stretched to fill available space) — see
  * activity_main.xml, where this view is wrap_content height and the
  * trackpad absorbs the remaining space.
+ *
+ * EDIT MODE (setEditMode): taps select a key instead of typing. Drag a key
+ * to move it (within its row or to another row), drag its right edge to
+ * resize it (the other keys in the row give or take the space), or use the
+ * bar's buttons for exact steps. Every change goes to onLayoutChanged so the
+ * host can save it; Copy/Paste exchange the layout as editable text.
  *
  * Emits key events as protocol-shaped maps via onEvent, and a live
  * local echo of what's been typed via onPreviewTextChanged (a
@@ -111,6 +100,10 @@ class KeyboardView @JvmOverloads constructor(
     var onEvent: ((Map<String, Any?>) -> Unit)? = null
     var onPreviewTextChanged: ((String) -> Unit)? = null
 
+    /** Called with the new layout after every edit, so the host can save it. */
+    var onLayoutChanged: ((LayoutDef) -> Unit)? = null
+    var onEditModeChanged: ((Boolean) -> Unit)? = null
+
     private val previewBuffer = StringBuilder()
 
     private val density = resources.displayMetrics.density
@@ -119,18 +112,29 @@ class KeyboardView @JvmOverloads constructor(
     private val keyMarginPx = (KEY_MARGIN_DP * density).toInt()
     private val strokePx = maxOf(1, density.toInt())
     private val keyTypeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
+
+    var layout: LayoutDef = DefaultLayout.build()
+        private set
+    private var currentLayer: String = layout.defaultLayerName
+
+    var editMode = false
+        private set
+    private var selRow = -1
+    private var selKey = -1
 
     private val armedMods = mutableSetOf<String>()
     private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
-    private val modifierButtons = mutableMapOf<String, StickyInfo>()
+    private val modifierButtons = mutableMapOf<String, MutableList<StickyInfo>>()
 
-    private data class ToggleInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
-    private var fnButtonInfo: ToggleInfo? = null
-    private var symbolsButtonInfo: ToggleInfo? = null
-
-    private var fnActive = false
-    private var symbolsActive = false
-    private val swappableKeys = mutableListOf<Pair<TextView, KeySpec>>()
+    // Holds the row views; rebuilt whenever the layer, the layout or the selection changes.
+    private val keyHost = LinearLayout(context).apply {
+        orientation = VERTICAL
+        layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
+    }
+    private val editInfo = TextView(context)
+    private val editBar = HorizontalScrollView(context)
+    private var resetArmedAt = 0L
 
     init {
         orientation = VERTICAL
@@ -147,154 +151,130 @@ class KeyboardView @JvmOverloads constructor(
             }
         })
 
-        addRow(digitsRow())
-        addRow(qwertyRow())
-        addRow(asdfRow())
-        addRow(zxcvRow())
-        addRow(modDockRow())
-        addRow(bottomRow())
+        buildEditBar()
+        addView(editBar)
+        addView(keyHost)
+        rebuild()
     }
 
-    private fun digitsRow() = listOf(
-        KeySpec("1", "Digit1", fnLabel = "F1", fnCode = "F1", symbolLabel = ".", symbolCode = "Period"),
-        KeySpec("2", "Digit2", fnLabel = "F2", fnCode = "F2", symbolLabel = ",", symbolCode = "Comma"),
-        KeySpec("3", "Digit3", fnLabel = "F3", fnCode = "F3", symbolLabel = ";", symbolCode = "Semicolon"),
-        KeySpec("4", "Digit4", fnLabel = "F4", fnCode = "F4", symbolLabel = "'", symbolCode = "Quote"),
-        KeySpec("5", "Digit5", fnLabel = "F5", fnCode = "F5", symbolLabel = "/", symbolCode = "Slash"),
-        KeySpec("6", "Digit6", fnLabel = "F6", fnCode = "F6", symbolLabel = "\\", symbolCode = "Backslash"),
-        KeySpec("7", "Digit7", fnLabel = "F7", fnCode = "F7", symbolLabel = "[", symbolCode = "BracketLeft"),
-        KeySpec("8", "Digit8", fnLabel = "F8", fnCode = "F8", symbolLabel = "]", symbolCode = "BracketRight"),
-        KeySpec("9", "Digit9", fnLabel = "F9", fnCode = "F9", symbolLabel = "`", symbolCode = "Backquote"),
-        KeySpec("0", "Digit0", fnLabel = "F10", fnCode = "F10"),
-        KeySpec("-", "Minus", fnLabel = "F11", fnCode = "F11"),
-        KeySpec("=", "Equal", fnLabel = "F12", fnCode = "F12"),
-    )
+    // ------------------------------------------------------------ public API
 
-    // Tier 1: shifted variants of the punctuation above — real keys.
-    private fun qwertyRow() = listOf(
-        KeySpec("q", "KeyQ", symbolLabel = "<", symbolCode = "Comma", symbolForcedMods = listOf("shift")),
-        KeySpec("w", "KeyW", symbolLabel = ">", symbolCode = "Period", symbolForcedMods = listOf("shift")),
-        KeySpec("e", "KeyE", symbolLabel = ":", symbolCode = "Semicolon", symbolForcedMods = listOf("shift")),
-        KeySpec("r", "KeyR", symbolLabel = "\"", symbolCode = "Quote", symbolForcedMods = listOf("shift")),
-        KeySpec("t", "KeyT", symbolLabel = "?", symbolCode = "Slash", symbolForcedMods = listOf("shift")),
-        KeySpec("y", "KeyY", symbolLabel = "|", symbolCode = "Backslash", symbolForcedMods = listOf("shift")),
-        KeySpec("u", "KeyU", symbolLabel = "{", symbolCode = "BracketLeft", symbolForcedMods = listOf("shift")),
-        KeySpec("i", "KeyI", symbolLabel = "}", symbolCode = "BracketRight", symbolForcedMods = listOf("shift")),
-        KeySpec("o", "KeyO", symbolLabel = "~", symbolCode = "Backquote", symbolForcedMods = listOf("shift")),
-        KeySpec("p", "KeyP", symbolLabel = "_", symbolCode = "Minus", symbolForcedMods = listOf("shift")),
-    )
-
-    // Tier 2: currency — no physical key, sent via Unicode entry.
-    private fun asdfRow() = listOf(
-        KeySpec("a", "KeyA", symbolLabel = "€", symbolUnicodeHex = "20ac"),
-        KeySpec("s", "KeyS", symbolLabel = "£", symbolUnicodeHex = "a3"),
-        KeySpec("d", "KeyD", symbolLabel = "¥", symbolUnicodeHex = "a5"),
-        KeySpec("f", "KeyF", symbolLabel = "¢", symbolUnicodeHex = "a2"),
-        KeySpec("g", "KeyG", symbolLabel = "×", symbolUnicodeHex = "d7"),
-        KeySpec("h", "KeyH", symbolLabel = "÷", symbolUnicodeHex = "f7"),
-        KeySpec("j", "KeyJ", symbolLabel = "±", symbolUnicodeHex = "b1"),
-        KeySpec("k", "KeyK", symbolLabel = "≈", symbolUnicodeHex = "2248"),
-        KeySpec("l", "KeyL", symbolLabel = "§", symbolUnicodeHex = "a7"),
-    )
-
-    // Tier 2: math comparison/misc — no physical key either.
-    private fun zxcvRow(): List<KeySpec> {
-        val letters = listOf(
-            KeySpec("z", "KeyZ", symbolLabel = "≠", symbolUnicodeHex = "2260"),
-            KeySpec("x", "KeyX", symbolLabel = "≤", symbolUnicodeHex = "2264"),
-            KeySpec("c", "KeyC", symbolLabel = "≥", symbolUnicodeHex = "2265"),
-            KeySpec("v", "KeyV", symbolLabel = "•", symbolUnicodeHex = "2022"),
-            KeySpec("b", "KeyB", symbolLabel = "√", symbolUnicodeHex = "221a"),
-            KeySpec("n", "KeyN", symbolLabel = "π", symbolUnicodeHex = "3c0"),
-            KeySpec("m", "KeyM", symbolLabel = "∞", symbolUnicodeHex = "221e"),
-        )
-        return listOf(KeySpec("⇧", "shift", sticky = true)) + letters + KeySpec("⌫", "Backspace")
+    /** Replaces the whole layout (e.g. one loaded from storage or pasted in). */
+    fun setLayout(newLayout: LayoutDef, notify: Boolean = false) {
+        layout = newLayout
+        if (layout.layer(currentLayer) == null) currentLayer = layout.defaultLayerName
+        clearSelection()
+        rebuild()
+        if (notify) onLayoutChanged?.invoke(layout)
     }
 
-    private fun modDockRow() = listOf(
-        KeySpec("esc", "Escape"),
-        KeySpec("prtsc", "PrintScreen"),
-        KeySpec("win", "Meta"),
-        KeySpec("ctrl", "ctrl", sticky = true),
-        KeySpec("alt", "alt", sticky = true),
-        KeySpec("fn", "fn"),
-        KeySpec("space", "Space", weight = 3f),
-        KeySpec("▲", "ArrowUp", fnLabel = "PgUp", fnCode = "PageUp"),
-    )
+    fun setEditMode(on: Boolean) {
+        if (editMode == on) return
+        editMode = on
+        editBar.visibility = if (on) View.VISIBLE else View.GONE
+        clearSelection()
+        updateEditInfo()
+        rebuild()
+        onEditModeChanged?.invoke(on)
+    }
 
-    private fun bottomRow() = listOf(
-        KeySpec("123", "123"),
-        KeySpec("◀", "ArrowLeft", fnLabel = "Home", fnCode = "Home"),
-        KeySpec("▼", "ArrowDown", fnLabel = "PgDn", fnCode = "PageDown"),
-        KeySpec("▶", "ArrowRight", fnLabel = "End", fnCode = "End"),
-        KeySpec("enter", "Enter", weight = 2f),
-    )
+    // ------------------------------------------------------------ building
 
-    private fun addRow(keys: List<KeySpec>) {
-        val row = LinearLayout(context).apply {
-            orientation = HORIZONTAL
-            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, rowHeightPx)
+    private fun clearSelection() {
+        selRow = -1
+        selKey = -1
+    }
+
+    private fun currentRows(): List<RowDef> = layout.layer(currentLayer)?.rows ?: emptyList()
+
+    private fun rebuild() {
+        keyHost.removeAllViews()
+        modifierButtons.clear()
+        val rows = currentRows()
+        for ((r, rowDef) in rows.withIndex()) {
+            val row = LinearLayout(context).apply {
+                orientation = HORIZONTAL
+                layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, (rowHeightPx * rowDef.height).toInt())
+            }
+            for ((k, key) in rowDef.keys.withIndex()) {
+                row.addView(buildKeyView(key, selected = editMode && r == selRow && k == selKey))
+            }
+            keyHost.addView(row)
         }
-        for (key in keys) {
-            row.addView(buildKeyView(key))
-        }
-        addView(row)
     }
 
-    private fun buildKeyView(key: KeySpec): TextView {
-        val isModifierLook = key.code in setOf("ctrl", "alt", "fn", "123", "Meta")
-        val restColor = if (isModifierLook) MODIFIER_COLOR else KEY_COLOR
-        val restPressedColor = if (isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
+    private fun switchLayer(name: String) {
+        if (layout.layer(name) == null) return
+        currentLayer = name
+        clearSelection()
+        rebuild()
+        updateEditInfo()
+    }
+
+    private fun buildKeyView(key: KeyDef, selected: Boolean): View {
+        val params = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
+            setMargins(keyMarginPx, keyMarginPx, keyMarginPx, keyMarginPx)
+        }
+
+        if (key.isSpacer) {
+            // Invisible gap. In edit mode it gets an outline so it can be selected and resized.
+            return View(context).apply {
+                layoutParams = params
+                if (editMode) background = outline(selected)
+            }
+        }
+
+        val toggledOn = key.layerTarget != null && key.layerTarget == currentLayer &&
+            key.layerTarget != layout.defaultLayerName
+        val armedSticky = key.isSticky && armedMods.contains(key.code)
+        val armed = toggledOn || armedSticky
+        val restColor = if (key.isModifierLook) MODIFIER_COLOR else KEY_COLOR
+        val restPressedColor = if (key.isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
         val view = TextView(context).apply {
             gravity = Gravity.CENTER
             typeface = keyTypeface
-            layoutParams = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-                setMargins(keyMarginPx, keyMarginPx, keyMarginPx, keyMarginPx)
-            }
+            layoutParams = params
         }
         applyLabel(view, key.label)
-        style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
+        if (armed) {
+            style(view, ARMED_COLOR, ARMED_PRESSED_COLOR, TEXT_COLOR_DARK, selected)
+        } else {
+            style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT, selected)
+        }
 
         // A small press-in on touch. Returns false so the click below still fires.
         view.setOnTouchListener { v, e ->
-            when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN ->
-                    v.animate().scaleX(PRESS_SCALE).scaleY(PRESS_SCALE).setDuration(50).start()
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                    v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+            if (!editMode) {
+                when (e.actionMasked) {
+                    MotionEvent.ACTION_DOWN ->
+                        v.animate().scaleX(PRESS_SCALE).scaleY(PRESS_SCALE).setDuration(50).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
+                }
             }
             false
         }
 
         view.setOnClickListener {
             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-            when {
-                key.code == "fn" -> toggleFn()
-                key.code == "123" -> toggleSymbols()
-                key.sticky -> toggleModifier(key.code, view, restColor, restPressedColor)
-                fnActive && key.fnCode != null -> sendKey(key.fnCode)
-                symbolsActive && key.symbolUnicodeHex != null ->
-                    sendUnicodeChar(key.symbolUnicodeHex, key.symbolLabel ?: "?")
-                symbolsActive && key.symbolCode != null -> sendKey(key.symbolCode, key.symbolForcedMods)
-                else -> sendKey(key.code)
-            }
+            onKeyTapped(key, view, restColor, restPressedColor)
         }
 
-        if (key.sticky) {
-            modifierButtons[key.code] = StickyInfo(view, restColor, restPressedColor)
+        if (key.isSticky) {
+            modifierButtons.getOrPut(key.code) { mutableListOf() }.add(StickyInfo(view, restColor, restPressedColor))
         }
-        if (key.code == "fn") {
-            fnButtonInfo = ToggleInfo(view, restColor, restPressedColor)
-        }
-        if (key.code == "123") {
-            symbolsButtonInfo = ToggleInfo(view, restColor, restPressedColor)
-        }
-        if (key.fnCode != null || key.symbolCode != null || key.symbolUnicodeHex != null) {
-            swappableKeys.add(view to key)
-        }
-
         return view
+    }
+
+    private fun onKeyTapped(key: KeyDef, view: TextView, restColor: Int, restPressedColor: Int) {
+        val target = key.layerTarget
+        when {
+            target != null -> switchLayer(if (target == currentLayer) layout.defaultLayerName else target)
+            key.isSticky -> toggleModifier(key.code, view, restColor, restPressedColor)
+            key.code == CODE_UNICODE && key.unicode != null -> sendUnicodeChar(key.unicode, key.label)
+            else -> sendKey(key.code, key.mods)
+        }
     }
 
     /** Single glyphs get the big size; multi-character labels (esc, PgUp, F10) a smaller one. */
@@ -303,18 +283,19 @@ class KeyboardView @JvmOverloads constructor(
         view.textSize = if (text.length > 1) WORD_TEXT_SP else KEY_TEXT_SP
     }
 
-    private fun style(view: TextView, restColor: Int, pressedColor: Int, textColor: Int) {
+    private fun style(view: TextView, restColor: Int, pressedColor: Int, textColor: Int, selected: Boolean = false) {
         view.setTextColor(textColor)
         val armed = restColor == ARMED_COLOR
+        val strokeWidth = if (selected) strokePx * 3 else strokePx
         val normal = GradientDrawable().apply {
             setColor(restColor)
             cornerRadius = keyRadiusPx
-            setStroke(strokePx, if (armed) ARMED_COLOR else BORDER_COLOR)
+            setStroke(strokeWidth, if (selected || armed) ARMED_COLOR else BORDER_COLOR)
         }
         val pressed = GradientDrawable().apply {
             setColor(pressedColor)
             cornerRadius = keyRadiusPx
-            setStroke(strokePx, if (armed) ARMED_PRESSED_COLOR else BORDER_PRESSED_COLOR)
+            setStroke(strokeWidth, if (selected) ARMED_COLOR else if (armed) ARMED_PRESSED_COLOR else BORDER_PRESSED_COLOR)
         }
         view.background = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), pressed)
@@ -322,57 +303,293 @@ class KeyboardView @JvmOverloads constructor(
         }
     }
 
+    private fun outline(selected: Boolean) = GradientDrawable().apply {
+        setColor(Color.TRANSPARENT)
+        cornerRadius = keyRadiusPx
+        setStroke(if (selected) strokePx * 3 else strokePx, if (selected) ARMED_COLOR else BORDER_COLOR)
+    }
+
     private fun toggleModifier(mod: String, view: TextView, restColor: Int, restPressedColor: Int) {
         if (armedMods.contains(mod)) {
             armedMods.remove(mod)
-            style(view, restColor, restPressedColor, TEXT_COLOR_LIGHT)
+            for (info in modifierButtons[mod].orEmpty()) {
+                style(info.view, info.restColor, info.restPressedColor, TEXT_COLOR_LIGHT)
+            }
         } else {
             armedMods.add(mod)
-            style(view, ARMED_COLOR, ARMED_PRESSED_COLOR, TEXT_COLOR_DARK)
+            for (info in modifierButtons[mod].orEmpty()) {
+                style(info.view, ARMED_COLOR, ARMED_PRESSED_COLOR, TEXT_COLOR_DARK)
+            }
         }
     }
 
-    private fun toggleFn() {
-        fnActive = !fnActive
-        if (fnActive && symbolsActive) {
-            symbolsActive = false
-            restyleToggleButton(symbolsButtonInfo, active = false)
+    // ------------------------------------------------------------ edit mode: bar
+
+    private fun chip(text: String, onClick: () -> Unit): TextView = TextView(context).apply {
+        this.text = text
+        textSize = 12f
+        typeface = keyTypeface
+        setTextColor(TEXT_COLOR_LIGHT)
+        gravity = Gravity.CENTER
+        val h = (12 * density).toInt()
+        val v = (9 * density).toInt()
+        setPadding(h, v, h, v)
+        background = GradientDrawable().apply {
+            setColor(KEY_COLOR)
+            cornerRadius = keyRadiusPx
+            setStroke(strokePx, BORDER_COLOR)
         }
-        restyleToggleButton(fnButtonInfo, active = fnActive)
-        updateSwappableLabels()
+        layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
+            setMargins(keyMarginPx, 0, keyMarginPx, 0)
+        }
+        setOnClickListener {
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            onClick()
+        }
     }
 
-    private fun toggleSymbols() {
-        symbolsActive = !symbolsActive
-        if (symbolsActive && fnActive) {
-            fnActive = false
-            restyleToggleButton(fnButtonInfo, active = false)
+    private fun buildEditBar() {
+        editBar.apply {
+            visibility = View.GONE
+            isHorizontalScrollBarEnabled = false
+            layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, (EDIT_BAR_HEIGHT_DP * density).toInt())
         }
-        restyleToggleButton(symbolsButtonInfo, active = symbolsActive)
-        updateSwappableLabels()
+        editInfo.apply {
+            textSize = 12f
+            setTextColor(Color.parseColor("#A1A1A8"))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding((8 * density).toInt(), 0, (12 * density).toInt(), 0)
+            layoutParams = LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT)
+        }
+        val strip = LinearLayout(context).apply {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        strip.addView(chip("done") { setEditMode(false) })
+        strip.addView(chip("◀ move") { nudgeSelected(-1) })
+        strip.addView(chip("move ▶") { nudgeSelected(1) })
+        strip.addView(chip("− width") { resizeSelected(-WIDTH_STEP) })
+        strip.addView(chip("+ width") { resizeSelected(WIDTH_STEP) })
+        strip.addView(chip("− height") { resizeRow(-HEIGHT_STEP) })
+        strip.addView(chip("+ height") { resizeRow(HEIGHT_STEP) })
+        strip.addView(chip("next layer") { cycleLayer() })
+        strip.addView(chip("copy") { copyLayout() })
+        strip.addView(chip("paste") { pasteLayout() })
+        strip.addView(chip("reset") { resetLayout() })
+        strip.addView(editInfo)
+        editBar.addView(strip)
+        updateEditInfo()
     }
 
-    private fun restyleToggleButton(info: ToggleInfo?, active: Boolean) {
-        val target = info ?: return
-        style(
-            target.view,
-            if (active) ARMED_COLOR else target.restColor,
-            if (active) ARMED_PRESSED_COLOR else target.restPressedColor,
-            if (active) TEXT_COLOR_DARK else TEXT_COLOR_LIGHT,
-        )
+    private fun selectedKeyDef(): KeyDef? = currentRows().getOrNull(selRow)?.keys?.getOrNull(selKey)
+
+    private fun updateEditInfo() {
+        val key = selectedKeyDef()
+        editInfo.text = if (key == null) {
+            "$currentLayer  ·  $EDIT_HINT"
+        } else {
+            val row = currentRows()[selRow]
+            val name = if (key.isSpacer) "gap" else "\"${key.label}\""
+            "$currentLayer  ·  row ${selRow + 1}  ·  $name  ·  width ${"%.2f".format(key.weight)}  ·  row height ${"%.2f".format(row.height)}"
+        }
     }
 
-    private fun updateSwappableLabels() {
-        for ((btnView, spec) in swappableKeys) {
-            applyLabel(
-                btnView,
-                when {
-                    fnActive && spec.fnLabel != null -> spec.fnLabel
-                    symbolsActive && spec.symbolLabel != null -> spec.symbolLabel
-                    else -> spec.label
-                },
-            )
+    /** Applies an edit result: saves it, redraws, refreshes the info line. */
+    private fun commit(newLayout: LayoutDef) {
+        if (newLayout == layout) return
+        layout = newLayout
+        rebuild()
+        updateEditInfo()
+        onLayoutChanged?.invoke(layout)
+    }
+
+    private fun nudgeSelected(delta: Int) {
+        if (selectedKeyDef() == null) return
+        val to = selKey + delta
+        val moved = LayoutEditor.moveKey(layout, currentLayer, selRow, selKey, to)
+        if (moved != layout) selKey = to
+        commit(moved)
+    }
+
+    private fun resizeSelected(delta: Float) {
+        val key = selectedKeyDef() ?: return
+        commit(LayoutEditor.resizeKey(layout, currentLayer, selRow, selKey, key.weight + delta))
+    }
+
+    private fun resizeRow(delta: Float) {
+        if (selRow < 0) return
+        val row = currentRows().getOrNull(selRow) ?: return
+        commit(LayoutEditor.setRowHeight(layout, currentLayer, selRow, row.height + delta))
+    }
+
+    private fun cycleLayer() {
+        val names = layout.layers.map { it.name }
+        val next = names[(names.indexOf(currentLayer) + 1) % names.size]
+        switchLayer(next)
+    }
+
+    private fun copyLayout() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("keyboard layout", LayoutText.serialize(layout)))
+        Toast.makeText(context, "Layout copied. Paste it anywhere to edit it.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun pasteLayout() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString()
+        if (text.isNullOrBlank()) {
+            Toast.makeText(context, "Nothing to paste: copy a layout first.", Toast.LENGTH_SHORT).show()
+            return
         }
+        val result = LayoutText.parse(text)
+        val parsed = result.layout
+        if (parsed == null) {
+            val shown = result.errors.take(4).joinToString("\n")
+            val more = if (result.errors.size > 4) "\n…and ${result.errors.size - 4} more" else ""
+            Toast.makeText(context, "Layout not applied:\n$shown$more", Toast.LENGTH_LONG).show()
+            return
+        }
+        setLayout(parsed, notify = true)
+        updateEditInfo()
+        Toast.makeText(context, "Layout applied.", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Needs a second tap within 3 seconds, so a stray touch can't wipe the layout. */
+    private fun resetLayout() {
+        val now = System.currentTimeMillis()
+        if (now - resetArmedAt > 3000L) {
+            resetArmedAt = now
+            Toast.makeText(context, "Tap reset again to restore the default layout.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        resetArmedAt = 0L
+        setLayout(DefaultLayout.build(), notify = true)
+        updateEditInfo()
+    }
+
+    // ------------------------------------------------------------ edit mode: touch
+
+    private enum class Drag { NONE, MOVE, RESIZE }
+
+    private var drag = Drag.NONE
+    private var dragDownX = 0f
+    private var dragDownY = 0f
+    private var dragMoved = false
+    private var dragStartLayout: LayoutDef? = null
+    private var dragStartWeight = 0f
+    private var dragChanged = false
+
+    /** In edit mode every touch on the keys is ours: nothing types, the keys are handled here. */
+    override fun onInterceptTouchEvent(ev: MotionEvent): Boolean =
+        editMode && ev.y >= keyHost.top
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!editMode) return super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val hit = hitTest(event.x, event.y) ?: return true
+                selRow = hit.first
+                selKey = hit.second
+                dragDownX = event.x
+                dragDownY = event.y
+                dragMoved = false
+                dragChanged = false
+                dragStartLayout = layout
+                dragStartWeight = selectedKeyDef()?.weight ?: 1f
+                drag = if (inResizeZone(hit, event.x)) Drag.RESIZE else Drag.MOVE
+                rebuild()  // highlights the newly selected key
+                updateEditInfo()
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (drag == Drag.NONE) return true
+                if (!dragMoved &&
+                    abs(event.x - dragDownX) < touchSlopPx && abs(event.y - dragDownY) < touchSlopPx
+                ) return true
+                dragMoved = true
+                if (drag == Drag.RESIZE) dragResize(event.x) else dragMove(event.x, event.y)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (dragChanged) onLayoutChanged?.invoke(layout)
+                drag = Drag.NONE
+                dragStartLayout = null
+            }
+        }
+        return true
+    }
+
+    private fun rowViewAt(index: Int): LinearLayout? = keyHost.getChildAt(index) as? LinearLayout
+
+    /** (row, key) under a point in this view's coordinates, snapping to the nearest key in the row. */
+    private fun hitTest(x: Float, y: Float): Pair<Int, Int>? {
+        val yy = y - keyHost.top
+        val xx = x - keyHost.left
+        var rowIndex = -1
+        for (r in 0 until keyHost.childCount) {
+            val rv = keyHost.getChildAt(r)
+            if (yy >= rv.top && yy < rv.bottom) { rowIndex = r; break }
+        }
+        if (rowIndex < 0) {
+            // Between rows or past the ends: snap to the closest row so a drag never loses its target.
+            if (keyHost.childCount == 0) return null
+            rowIndex = if (yy < 0) 0 else keyHost.childCount - 1
+        }
+        val rowView = rowViewAt(rowIndex) ?: return null
+        if (rowView.childCount == 0) return null
+        var best = 0
+        var bestDistance = Float.MAX_VALUE
+        for (k in 0 until rowView.childCount) {
+            val kv = rowView.getChildAt(k)
+            val centre = (kv.left + kv.right) / 2f
+            val distance = abs(centre - xx)
+            if (distance < bestDistance) { bestDistance = distance; best = k }
+        }
+        return rowIndex to best
+    }
+
+    private fun inResizeZone(hit: Pair<Int, Int>, x: Float): Boolean {
+        val kv = rowViewAt(hit.first)?.getChildAt(hit.second) ?: return false
+        val zone = minOf(RESIZE_ZONE_DP * density, kv.width * 0.4f)
+        val right = kv.right + keyHost.left
+        return x >= right - zone - keyMarginPx && x <= right + keyMarginPx
+    }
+
+    private fun dragResize(x: Float) {
+        val start = dragStartLayout ?: return
+        val rowView = rowViewAt(selRow) ?: return
+        val startRow = start.layer(currentLayer)?.rows?.getOrNull(selRow) ?: return
+        if (rowView.width <= 0) return
+        val weightPerPx = startRow.totalWeight / rowView.width
+        val newWeight = dragStartWeight + (x - dragDownX) * weightPerPx
+        val resized = LayoutEditor.resizeKey(start, currentLayer, selRow, selKey, newWeight)
+        if (resized == layout) return
+        layout = resized
+        dragChanged = true
+        // Update the widths in place: no rebuild, so the drag stays smooth.
+        val keys = currentRows()[selRow].keys
+        for (k in 0 until rowView.childCount) {
+            val lp = rowView.getChildAt(k).layoutParams as LayoutParams
+            lp.weight = keys[k].weight
+        }
+        rowView.requestLayout()
+        updateEditInfo()
+    }
+
+    private fun dragMove(x: Float, y: Float) {
+        val hit = hitTest(x, y) ?: return
+        if (hit.first == selRow && hit.second == selKey) return
+        val moved = if (hit.first == selRow) {
+            LayoutEditor.moveKey(layout, currentLayer, selRow, selKey, hit.second)
+        } else {
+            LayoutEditor.moveKeyToRow(layout, currentLayer, selRow, selKey, hit.first, hit.second)
+        }
+        if (moved == layout) return
+        layout = moved
+        dragChanged = true
+        selRow = hit.first
+        selKey = hit.second.coerceAtMost(currentRows()[selRow].keys.size - 1)
+        rebuild()
+        updateEditInfo()
     }
 
     private fun sendRaw(code: String, mods: List<String>) {
@@ -445,8 +662,10 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun clearModifiers() {
         armedMods.clear()
-        for (info in modifierButtons.values) {
-            style(info.view, info.restColor, info.restPressedColor, TEXT_COLOR_LIGHT)
+        for (infos in modifierButtons.values) {
+            for (info in infos) {
+                style(info.view, info.restColor, info.restPressedColor, TEXT_COLOR_LIGHT)
+            }
         }
     }
 }
