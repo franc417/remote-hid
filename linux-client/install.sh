@@ -5,7 +5,12 @@
 #
 #   ./install.sh                       use the active venv's python, else python3
 #   ./install.sh --python /path/to/python   bake in a specific interpreter
+#   ./install.sh --add-to-path         also add ~/.local/bin to your shell's PATH
 #   ./install.sh --uninstall           remove what this script installed
+#
+# Run it as your NORMAL user (not root, not sudo): it installs into your home
+# directory, and your desktop session only looks in your own home.
+# If "./install.sh" says "Permission denied", run:  bash install.sh
 #
 # The launcher runs gui.py in THIS checkout, so `git pull` is all an update needs.
 
@@ -21,14 +26,27 @@ LOGO="$HERE/../branding/logo-256.png"
 
 PYTHON=""
 UNINSTALL=0
+ADD_TO_PATH=0
+ALLOW_ROOT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --python) PYTHON="${2:-}"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
+    --add-to-path) ADD_TO_PATH=1; shift ;;
+    --allow-root) ALLOW_ROOT=1; shift ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# Root would install into /root, which the desktop user never sees (no menu entry,
+# no command). Cleaning up (--uninstall) is still allowed so a mistake can be undone.
+if [ "${REMOTE_HID_TEST_UID:-$(id -u)}" = 0 ] && [ "$ALLOW_ROOT" = 0 ] && [ "$UNINSTALL" = 0 ]; then
+  echo "Don't run this as root: it would install into $HOME, and your normal desktop user can't see that." >&2
+  echo "Leave the root shell (type: exit), then as your normal user run:  bash install.sh" >&2
+  echo "(If you already ran it as root, undo that with:  bash install.sh --uninstall)" >&2
+  exit 1
+fi
 
 if [ "$UNINSTALL" = 1 ]; then
   rm -f "$LAUNCHER" "$DESKTOP" "$ICON"
@@ -101,8 +119,29 @@ echo "Installed:"
 echo "  command    $LAUNCHER"
 echo "  menu entry $DESKTOP"
 echo "  python     $PYTHON"
+PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+if [ "$ADD_TO_PATH" = 1 ]; then
+  case "$(basename "${SHELL:-}")" in
+    zsh) RC="$HOME/.zshrc" ;;
+    bash) RC="$HOME/.bashrc" ;;
+    fish) RC="" ;;
+    *) RC="$HOME/.profile" ;;
+  esac
+  if [ -z "$RC" ]; then
+    echo "fish shell: run  fish_add_path ~/.local/bin  (this script does not edit fish's config)"
+  elif grep -qsF "$PATH_LINE" "$RC"; then
+    echo "$RC already puts ~/.local/bin on your PATH."
+  else
+    printf '\n# added by remote-hid install.sh\n%s\n' "$PATH_LINE" >> "$RC"
+    echo "Added ~/.local/bin to your PATH in $RC. Open a new terminal (or run: source $RC) to use it."
+  fi
+fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) echo "Run it with:  remote-hid" ;;
-  *) echo "Add $BIN_DIR to your PATH (e.g. in ~/.bashrc or ~/.zshrc):  export PATH=\"\$HOME/.local/bin:\$PATH\""
-     echo "Until then run it with:  $LAUNCHER" ;;
+  *) if [ "$ADD_TO_PATH" = 0 ]; then
+       echo "~/.local/bin is not on your PATH, so the word remote-hid won't work yet. Either:"
+       echo "  re-run:  bash install.sh --add-to-path     (then open a new terminal)"
+       echo "  or add this line to your shell's rc file:  $PATH_LINE"
+     fi
+     echo "Without that, run it with:  $LAUNCHER   (the app-menu entry works right away)" ;;
 esac

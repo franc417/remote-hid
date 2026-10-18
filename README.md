@@ -188,9 +188,13 @@ drawn large with the full quiet zone, which is what small phone cameras need.
 
 ```
 cd linux-client
-./install.sh                         # uses your active venv's python, else python3
-./install.sh --python /path/to/python   # or pick the interpreter yourself
+bash install.sh                         # uses your active venv's python, else python3
+bash install.sh --python /path/to/python   # or pick the interpreter yourself
+bash install.sh --add-to-path           # also makes the word `remote-hid` work in new terminals
 ```
+
+Run it as your **normal user** (not root or sudo): it installs into your home directory and the installer refuses
+to run as root. Use `bash install.sh` rather than `./install.sh` if your copy lost its executable bit.
 
 This puts a `remote-hid` command in `~/.local/bin` and an app-menu entry (with the logo), then you just run
 `remote-hid` or click it in your launcher. It runs `gui.py` from this checkout, so `git pull` updates it. It tells

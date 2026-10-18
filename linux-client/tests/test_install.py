@@ -17,7 +17,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def run(home, *args, env_extra=None):
-    env = {"PATH": os.environ["PATH"], "HOME": str(home)}
+    # Pretend to be a normal user so the tests do not depend on who runs them
+    # (the root guard is tested separately by overriding this).
+    env = {"PATH": os.environ["PATH"], "HOME": str(home), "REMOTE_HID_TEST_UID": "1000", "SHELL": "/bin/bash"}
     env.update(env_extra or {})
     return subprocess.run(["bash", INSTALL, *args], capture_output=True, text=True, env=env, timeout=30)
 
@@ -118,10 +120,66 @@ def test_it_tells_you_when_the_bin_directory_is_not_on_path(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     r = run(home, "--python", sys.executable)
-    assert ".local/bin" in r.stdout and ("Add" in r.stdout or "Run it with" in r.stdout)
+    assert ".local/bin" in r.stdout and "not on your PATH" in r.stdout
 
 
 def test_a_bad_option_is_rejected(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     assert run(home, "--bogus").returncode == 2
+
+
+def test_running_as_root_is_refused_with_the_reason_and_installs_nothing(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = run(home, "--python", sys.executable, env_extra={"REMOTE_HID_TEST_UID": "0"})
+    assert r.returncode == 1
+    assert "root" in r.stderr and "bash install.sh" in r.stderr and "--uninstall" in r.stderr
+    assert not (home / ".local" / "bin" / "remote-hid").exists()
+
+
+def test_root_can_still_clean_up_a_mistaken_install(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    run(home, "--python", sys.executable)
+    r = run(home, "--uninstall", env_extra={"REMOTE_HID_TEST_UID": "0"})
+    assert r.returncode == 0
+    assert not (home / ".local" / "bin" / "remote-hid").exists()
+
+
+def test_root_can_be_allowed_explicitly(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = run(home, "--python", sys.executable, "--allow-root", env_extra={"REMOTE_HID_TEST_UID": "0"})
+    assert r.returncode == 0 and (home / ".local" / "bin" / "remote-hid").exists()
+
+
+def test_add_to_path_writes_the_line_once_to_the_right_rc_file(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    for _ in range(2):
+        r = run(home, "--python", sys.executable, "--add-to-path")
+        assert r.returncode == 0
+    rc = (home / ".bashrc").read_text()
+    assert rc.count('export PATH="$HOME/.local/bin:$PATH"') == 1          # idempotent
+    assert "already" in r.stdout
+
+
+def test_add_to_path_picks_zshrc_for_zsh_and_leaves_fish_alone(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    run(home, "--python", sys.executable, "--add-to-path", env_extra={"SHELL": "/usr/bin/zsh"})
+    assert (home / ".zshrc").exists() and not (home / ".bashrc").exists()
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    r = run(home2, "--python", sys.executable, "--add-to-path", env_extra={"SHELL": "/usr/bin/fish"})
+    assert "fish_add_path" in r.stdout
+    assert not any((home2 / n).exists() for n in (".bashrc", ".zshrc", ".profile"))
+
+
+def test_without_the_flag_the_path_advice_names_the_flag_and_the_menu_entry(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    r = run(home, "--python", sys.executable)
+    assert "--add-to-path" in r.stdout and "menu entry" in r.stdout
+    assert not (home / ".bashrc").exists()                               # never edits rc files unasked
