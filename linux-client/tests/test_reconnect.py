@@ -118,3 +118,17 @@ def test_a_cable_phone_comes_after_the_typed_address_and_before_remembered_ones(
 def test_a_cable_phone_already_remembered_is_not_listed_twice():
     out = reconnect.candidates(None, ["ws://192.168.42.129:8765", "ws://old:8765"], 0, tether=["ws://192.168.42.129:8765"])
     assert out == ["ws://192.168.42.129:8765", "ws://old:8765"]
+
+
+def test_filter_reachable_keeps_only_answering_targets_in_order():
+    live = {"192.168.1.9", "192.168.42.129"}
+    probe = lambda host, port, timeout: host in live
+    out = reconnect.filter_reachable(
+        ["ws://10.0.0.1:8765", "ws://192.168.42.129:8765", "ws://192.168.1.4:8765", "ws://192.168.1.9:8765"], probe=probe)
+    assert out == ["ws://192.168.42.129:8765", "ws://192.168.1.9:8765"]
+
+
+def test_filter_reachable_handles_empty_and_all_dead():
+    probe = lambda host, port, timeout: False
+    assert reconnect.filter_reachable([], probe=probe) == []
+    assert reconnect.filter_reachable(["ws://a:1"], probe=probe) == []

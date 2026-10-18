@@ -647,3 +647,135 @@ def test_an_empty_address_box_with_no_cable_asks_for_an_address(monkeypatch, tmp
         assert not app.connected
     finally:
         app._on_close()
+
+
+# ------------------------------------------------ pairing without a camera
+
+def test_the_pairing_qr_is_large_crisp_and_has_the_full_quiet_zone():
+    import qrcode as qrlib
+    payload = "192.168.100.5:8780"
+    img = gui.make_qr_image(payload, 300)
+    assert 240 <= img.width <= 300 and img.width == img.height   # was 180px
+    qr = qrlib.QRCode(error_correction=qrlib.constants.ERROR_CORRECT_M, box_size=1, border=4)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    modules = qr.modules_count + 8
+    scale = img.width // modules
+    assert scale >= 6, f"only {scale}px per module: too small for a phone camera"
+    assert img.width == scale * modules                          # whole pixels per module: no resampling blur
+    px = img.load()
+    # the 4-module quiet zone is white all around, and the first module of the finder pattern is black
+    assert all(px[x, y] == (255, 255, 255) for x in range(0, 4 * scale) for y in (0, img.height // 2, img.height - 1))
+    assert px[4 * scale + scale // 2, 4 * scale + scale // 2] == (0, 0, 0)
+
+
+def test_an_unreadable_size_still_produces_a_valid_image():
+    assert gui.make_qr_image("1.2.3.4:5", 100).width >= 25
+
+
+def test_find_phone_connects_to_the_only_phone_it_finds(monkeypatch, tmp_path):
+    seen = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        seen.append(uri)
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "scan_subnet", lambda ip: ["ws://10.0.0.77:8765"])
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: list(uris))
+        app.uri_var.set("ws://")
+        app.find_phone()
+        assert app.find_button.cget("state") == "disabled"        # no double clicks while searching
+        assert _wait(root, lambda: seen == ["ws://10.0.0.77:8765"])
+        assert app.find_button.cget("state") == "normal"
+        assert app.uri_var.get() == "ws://10.0.0.77:8765"
+    finally:
+        app._on_close()
+
+
+def test_find_phone_prefers_the_cable_and_says_when_there_are_several(monkeypatch, tmp_path):
+    seen = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        seen.append(uri)
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "tether_uris", lambda: ["ws://192.168.42.129:8765"])
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: list(uris))
+        monkeypatch.setattr(gui, "scan_subnet", lambda ip: ["ws://10.0.0.77:8765", "ws://192.168.42.129:8765"])
+        app.find_phone()
+        assert _wait(root, lambda: seen == ["ws://192.168.42.129:8765"])   # cable first, duplicates merged
+    finally:
+        app._on_close()
+
+
+def test_a_cable_gateway_that_does_not_answer_is_not_offered(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("nothing answered, so nothing should connect")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "tether_uris", lambda: ["ws://192.168.42.129:8765"])
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: [])   # a router, or the app is closed
+        app.find_phone()
+        assert _wait(root, lambda: app.status_var.get().startswith("No phone found"))
+        assert app.find_button.cget("state") == "normal"
+    finally:
+        app._on_close()
+
+
+def test_find_phone_with_nothing_around_explains_what_to_do(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("must not connect")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: [])
+        app.find_phone()
+        assert _wait(root, lambda: "No phone found" in app.status_var.get())
+        assert "Wi-Fi" in app.status_var.get() and "USB tethering" in app.status_var.get()
+    finally:
+        app._on_close()
+
+
+def test_a_search_that_crashes_does_not_leave_the_button_dead(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("must not connect")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        def boom(ip):
+            raise RuntimeError("scan blew up")
+        monkeypatch.setattr(gui, "scan_subnet", boom)
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: [])
+        app.find_phone()
+        assert _wait(root, lambda: app.find_button.cget("state") == "normal")
+    finally:
+        app._on_close()
+
+
+def test_finding_the_phone_you_are_already_connected_to_does_not_reconnect(monkeypatch, tmp_path):
+    runs = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        runs.append(uri)
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "filter_reachable", lambda uris: list(uris))
+        monkeypatch.setattr(gui, "scan_subnet", lambda ip: ["ws://10.0.0.7:8765"])
+        app.uri_var.set("ws://10.0.0.7:8765")
+        app.connect()
+        assert _wait(root, lambda: app.session.target == "ws://10.0.0.7:8765")
+        app.find_phone()
+        assert _wait(root, lambda: app.status_var.get().startswith("Already connected"))
+        assert runs == ["ws://10.0.0.7:8765"]
+    finally:
+        app._on_close()

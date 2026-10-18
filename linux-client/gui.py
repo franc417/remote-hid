@@ -23,7 +23,7 @@ from client import run_client
 from input_backend import UinputBackend
 from netinfo import find_tether_gateways, scan_anchor_ips
 from protocol import SessionReplaced
-from reconnect import PHONE_PORT, backoff_delay, candidates, load_known, prioritize, remember, scan_subnet
+from reconnect import PHONE_PORT, backoff_delay, candidates, filter_reachable, load_known, prioritize, remember, scan_subnet
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
 RENDEZVOUS_PORT = 8766
@@ -52,6 +52,21 @@ def load_last_uri() -> str:
 def save_last_uri(uri: str) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps({"uri": uri}))
+
+
+def make_qr_image(payload: str, target_px: int = 300):
+    """The pairing QR, drawn for a PHONE CAMERA to read. It used to be 180 px
+    with a 2-module quiet zone, resampled smooth: a few pixels per module,
+    which small fixed-focus phone cameras cannot decode. Now: the 4-module
+    quiet zone the QR spec asks for, and each module a whole number of crisp
+    pixels (no resampling blur), as large as fits in `target_px`."""
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=1, border=4)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    total_modules = qr.modules_count + 2 * 4
+    qr.box_size = max(1, target_px // total_modules)
+    image = qr.make_image(fill_color="black", back_color="white")
+    return getattr(image, "get_image", lambda: image)().convert("RGB")
 
 
 def tether_uris() -> list:
@@ -111,7 +126,7 @@ class App:
 
         root.title("remote-hid")
         root.configure(bg=BG)
-        root.geometry("380x450")
+        root.geometry("420x690")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         tk.Label(root, text="Phone address", bg=BG, fg=FG).pack(pady=(18, 4))
@@ -142,6 +157,21 @@ class App:
             activeforeground=FG,
         )
         self.connect_button.pack(pady=6)
+
+        # Pairing that needs no camera: look for the phone (a cable first, then
+        # every private subnet this computer is on) and connect to it.
+        self.find_button = tk.Button(
+            root,
+            text="Find phone",
+            command=self.find_phone,
+            width=18,
+            bg=SURFACE,
+            fg=FG,
+            relief=tk.FLAT,
+            activebackground="#333333",
+            activeforeground=FG,
+        )
+        self.find_button.pack(pady=(0, 6))
 
         # A plain attribute mirrors the checkbox: the connection thread reads
         # it, and Tk variables must only be touched from the main thread.
@@ -193,6 +223,9 @@ class App:
                 elif kind == "reset_button":
                     self.connected = False
                     self.connect_button.config(text="Connect")
+                elif kind == "found_phones":
+                    self.find_button.config(state=tk.NORMAL)
+                    self._on_phones_found(payload)
                 elif kind == "announced_uri":
                     current = self.session.target if self.session else None
                     if self.connected and payload == current:
@@ -206,10 +239,41 @@ class App:
             pass
         self._poll_job = self.root.after(100, self._poll_queue)
 
+    def find_phone(self):
+        """Looks for the phone without any QR code: a phone on a cable first,
+        then every private subnet this computer is on. Runs off the UI thread."""
+        self.find_button.config(state=tk.DISABLED)
+        self.status_var.set("Looking for the phone...")
+        threading.Thread(target=self._find_worker, daemon=True).start()
+
+    def _find_worker(self):
+        found = []
+        try:
+            found = list(filter_reachable(tether_uris()))  # a cable address only counts if the app answers
+            for ip in scan_anchor_ips():
+                for uri in scan_subnet(ip):
+                    if uri not in found:
+                        found.append(uri)
+        except Exception as exc:  # a scan problem must not leave the button disabled
+            print(f"[gui] phone search failed: {exc}")
+        self.status_queue.put(("found_phones", found, None))
+
+    def _on_phones_found(self, found):
+        if not found:
+            self.status_var.set("No phone found. Open the app on the phone, then join the same Wi-Fi or turn on USB tethering")
+            return
+        first = found[0]
+        if self.connected and self.session is not None and self.session.target == first:
+            self.status_var.set(f"Already connected to {first}")
+            return
+        self.uri_var.set(first)
+        extra = f" (found {len(found)}, using the first)" if len(found) > 1 else ""
+        self.status_var.set(f"Found a phone{extra}, connecting...")
+        self.connect()
+
     def _show_qr(self):
         payload = f"{local_ip()}:{RENDEZVOUS_PORT}"
-        img = qrcode.make(payload, border=2).resize((180, 180))
-        self._qr_photo = ImageTk.PhotoImage(img)
+        self._qr_photo = ImageTk.PhotoImage(make_qr_image(payload))
         self.qr_label.config(image=self._qr_photo)
 
     def _run_rendezvous(self):

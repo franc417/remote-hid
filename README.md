@@ -174,3 +174,11 @@ Chromium-based browser `--force-renderer-accessibility` helps if a box is not de
 Without these packages everything else works and the phone shows a local echo of the keys it sent instead.
 Set `REMOTE_HID_NO_FIELD=1` to turn the feature off. Password boxes are never read: the phone only gets a row
 of bullets.
+
+
+## Pairing without the camera
+
+The desktop window has a **Find phone** button: it looks for the phone on a USB cable first, then on every private
+network this computer is on, and connects to what it finds. Nothing needs to be scanned or typed. The phone shows its
+own addresses (Wi-Fi and USB) at the top of the app if you prefer to type one. The QR code is still there; it is now
+drawn large with the full quiet zone, which is what small phone cameras need.

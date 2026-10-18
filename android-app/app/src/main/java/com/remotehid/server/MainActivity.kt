@@ -60,6 +60,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var typingBar: View
     private lateinit var typingLabel: TextView
     private val typingModel = TypingModel()
+
+    // QR scanning diagnostics: how many camera frames the analyser has seen this scan.
+    private var scanFrames = 0
+    private val scanHint = Runnable {
+        if (inScanMode) {
+            statusText.text = if (scanFrames == 0) {
+                "The camera is not delivering frames. Check the camera permission, or press Find phone on the desktop instead."
+            } else {
+                "The camera is working but no QR code is readable. Hold the phone about 30 cm from the code so it fills the frame " +
+                    "(pinch to zoom, tap to focus), or press Find phone on the desktop instead."
+            }
+        }
+    }
     private val uiHandler = Handler(Looper.getMainLooper())
     private var expanded = false
     private var inScanMode = false
@@ -208,6 +221,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun startScanning() {
         inScanMode = true
+        scanFrames = 0
+        statusText.text = "Point the camera at the QR code on the desktop (about 30 cm away)"
+        uiHandler.removeCallbacks(scanHint)
+        uiHandler.postDelayed(scanHint, 6000)
         trackpad.visibility = View.GONE
         keyboard.visibility = View.GONE
         qrPreview.visibility = View.VISIBLE
@@ -229,6 +246,8 @@ class MainActivity : AppCompatActivity() {
         val scanner = BarcodeScanning.getClient(options)
 
         cameraController = LifecycleCameraController(this)
+        cameraController.isTapToFocusEnabled = true
+        cameraController.isPinchToZoomEnabled = true
         cameraController.bindToLifecycle(this)
         cameraControllerReady = true
         cameraController.setImageAnalysisAnalyzer(
@@ -239,6 +258,7 @@ class MainActivity : AppCompatActivity() {
                 ContextCompat.getMainExecutor(this),
             ) { result: MlKitAnalyzer.Result? ->
                 if (!inScanMode) return@MlKitAnalyzer
+                scanFrames++  // proves frames are arriving even when nothing is readable
                 val barcodes = result?.getValue(scanner)
                 val value = barcodes?.firstOrNull()?.rawValue ?: return@MlKitAnalyzer
                 stopScanning()
@@ -250,6 +270,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopScanning() {
         inScanMode = false
+        uiHandler.removeCallbacks(scanHint)
         if (cameraControllerReady) {
             cameraController.unbind()
         }

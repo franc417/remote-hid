@@ -147,3 +147,23 @@ def prioritize(
     with ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
         ok = list(pool.map(lambda t: probe(*parts(t), timeout), targets))
     return [t for t, up in zip(targets, ok) if up] + [t for t, up in zip(targets, ok) if not up]
+
+
+def filter_reachable(
+    targets: List[str],
+    probe: Callable[[str, int, float], bool] = _tcp_open,
+    timeout: float = 0.8,
+) -> List[str]:
+    """Only the ws:// targets whose port answers right now, original order kept.
+    Used where a guess (a cable gateway from the routing table) must be
+    confirmed as a phone with the app open before it is offered."""
+    from urllib.parse import urlparse
+
+    if not targets:
+        return []
+    def parts(uri: str):
+        u = urlparse(uri)
+        return u.hostname or "", u.port or PHONE_PORT
+    with ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
+        ok = list(pool.map(lambda t: probe(*parts(t), timeout), targets))
+    return [t for t, up in zip(targets, ok) if up]
