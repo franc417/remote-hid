@@ -76,85 +76,17 @@ PING_TIMEOUT = 5
 # still the one we are connected to.
 WATCH_SECONDS = 1
 
-# Interfaces that are clearly not a tethered phone, excluded before
-# even checking whether they look USB-attached.
-_EXCLUDED_PREFIXES = ("lo", "docker", "virbr", "tailscale", "wl", "br-", "veth")
-
-
-def _looks_like_usb_interface(name: str) -> bool:
-    """USB-attached network interfaces get predictable names ending in
-    u<N> (systemd's USB-port-path naming scheme — e.g. enp0s20f0u1,
-    wwp0s20f0u2, both seen on real hardware), or the older usb0/rndis0
-    style names.
-    """
-    return bool(re.search(r"u\d+$", name)) or name.startswith(("usb", "rndis"))
-
-
-def _ipv4_address(iface: dict):
-    """Returns this interface's IPv4 address if it has one — checked
-    by parsing the address itself rather than trusting a "family" key
-    to exist in every ip -j version, since that wasn't confirmed
-    present in every example schema checked.
-    """
-    for addr in iface.get("addr_info", []):
-        local = addr.get("local")
-        if not local:
-            continue
-        try:
-            if ipaddress.ip_address(local).version == 4:
-                return local
-        except ValueError:
-            continue
-    return None
-
-
-def _candidate_interfaces():
-    try:
-        result = subprocess.run(
-            ["ip", "-j", "addr", "show"],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        interfaces = json.loads(result.stdout)
-    except (subprocess.SubprocessError, FileNotFoundError, json.JSONDecodeError, OSError):
-        return []
-
-    candidates = []
-    for iface in interfaces:
-        name = iface.get("ifname", "")
-        if any(name.startswith(p) for p in _EXCLUDED_PREFIXES):
-            continue
-        if not _looks_like_usb_interface(name):
-            continue
-        if _ipv4_address(iface):
-            candidates.append(name)
-    return candidates
-
-
-def _default_gateway_for(iface: str):
-    try:
-        result = subprocess.run(
-            ["ip", "-j", "route", "show", "dev", iface],
-            capture_output=True, text=True, timeout=5, check=True,
-        )
-        routes = json.loads(result.stdout)
-    except (subprocess.SubprocessError, FileNotFoundError, json.JSONDecodeError, OSError):
-        return None
-    for route in routes:
-        if route.get("dst") == "default" and route.get("gateway"):
-            return route["gateway"]
-    return None
-
-
-def find_tether_gateway():
-    """Finds a USB-tethered phone's gateway address by asking the OS,
-    not by assuming a fixed one. Returns None if nothing tether-shaped
-    is currently up.
-    """
-    for iface in _candidate_interfaces():
-        gateway = _default_gateway_for(iface)
-        if gateway:
-            return gateway
-    return None
+# Cable detection lives in netinfo.py (shared with the GUI). Re-exported under
+# the old names so callers and tests keep working; `subprocess` stays imported
+# here because the tests patch it through this module.
+from netinfo import (  # noqa: E402,F401
+    _candidate_interfaces,
+    _default_gateway_for,
+    _ipv4_address,
+    find_tether_gateway,
+    find_tether_gateways,
+    looks_like_usb_name as _looks_like_usb_interface,
+)
 
 
 async def connect_and_relay(backend, uri: str) -> None:

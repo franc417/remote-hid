@@ -21,8 +21,9 @@ from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
+from netinfo import find_tether_gateways, scan_anchor_ips
 from protocol import SessionReplaced
-from reconnect import backoff_delay, candidates, load_known, prioritize, remember, scan_subnet
+from reconnect import PHONE_PORT, backoff_delay, candidates, load_known, prioritize, remember, scan_subnet
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
 RENDEZVOUS_PORT = 8766
@@ -51,6 +52,11 @@ def load_last_uri() -> str:
 def save_last_uri(uri: str) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps({"uri": uri}))
+
+
+def tether_uris() -> list:
+    """ws:// addresses of phones plugged in by USB tethering right now."""
+    return [f"ws://{gw}:{PHONE_PORT}" for gw in find_tether_gateways()]
 
 
 def local_ip() -> str:
@@ -254,8 +260,14 @@ class App:
 
     def connect(self, persistent: bool = False):
         uri = self.uri_var.get().strip()
+        if not uri:
+            # Nothing typed: a phone plugged in by cable is found by itself.
+            cable = tether_uris()
+            if cable:
+                uri = cable[0]
+                self.uri_var.set(uri)
         if not is_valid_ws_uri(uri):
-            self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765")
+            self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765 (or plug the phone in with USB tethering on)")
             return
         self._end_session()  # switching phones / reconnecting: drop the old one cleanly first
         session = Session()
@@ -301,8 +313,14 @@ class App:
             return
 
         def scan():
-            ip = local_ip()
-            return [] if ip.startswith("127.") else scan_subnet(ip)
+            # Every private subnet this machine is on (USB links first), not just
+            # the default route's: a VPN or a second network can own that route.
+            found = []
+            for ip in scan_anchor_ips():
+                for uri in scan_subnet(ip):
+                    if uri not in found:
+                        found.append(uri)
+            return found
 
         # Retrying only happens once a connection has actually worked in this
         # session (or when launched via autostart with a remembered phone). A
@@ -317,7 +335,7 @@ class App:
             while True:
                 connected_here = False
                 targets = candidates(primary, load_known(known_path(), CONFIG_PATH), attempt,
-                                     scan if self.auto_reconnect else None)
+                                     scan if self.auto_reconnect else None, tether=tether_uris())
                 if persistent or attempt > 0 or ever_connected:
                     # Retry rounds: put addresses that answer right now first, so a
                     # stale one (USB gateway after the cable is gone, an old lease)

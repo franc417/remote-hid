@@ -104,13 +104,17 @@ def candidates(
     known: List[str],
     attempt: int,
     scan: Optional[Callable[[], List[str]]] = None,
+    tether: Optional[List[str]] = None,
 ) -> List[str]:
     """Addresses to try this round, best first, no duplicates: what's in the
-    address box (the user's explicit choice), then remembered phones by
-    recency, and -- only after SCAN_AFTER_ATTEMPTS failed rounds -- whatever
-    the subnet scan finds, so a phone whose address changed is still found."""
+    address box (the user's explicit choice), then a phone plugged in by
+    cable right now (`tether`, read from the OS each round: its address
+    changes between plugs on newer Android, so a remembered one goes stale
+    but this one never does), then remembered phones by recency, and -- only
+    after SCAN_AFTER_ATTEMPTS failed rounds -- whatever the subnet scan
+    finds, so a phone whose address changed is still found."""
     order: List[str] = []
-    for uri in ([primary] if primary else []) + list(known):
+    for uri in ([primary] if primary else []) + list(tether or []) + list(known):
         if uri and uri not in order:
             order.append(uri)
     if scan is not None and attempt >= SCAN_AFTER_ATTEMPTS:

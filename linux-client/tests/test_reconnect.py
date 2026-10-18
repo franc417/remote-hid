@@ -108,3 +108,13 @@ def test_prioritize_keeps_order_within_each_group_and_handles_tiny_inputs():
     assert reconnect.prioritize(["ws://a:1", "ws://b:2"], probe=probe) == ["ws://a:1", "ws://b:2"]
     assert reconnect.prioritize([], probe=probe) == []
     assert reconnect.prioritize(["ws://a:1"], probe=probe) == ["ws://a:1"]
+
+
+def test_a_cable_phone_comes_after_the_typed_address_and_before_remembered_ones():
+    out = reconnect.candidates("ws://typed:8765", ["ws://old:8765"], 0, tether=["ws://192.168.42.129:8765"])
+    assert out == ["ws://typed:8765", "ws://192.168.42.129:8765", "ws://old:8765"]
+
+
+def test_a_cable_phone_already_remembered_is_not_listed_twice():
+    out = reconnect.candidates(None, ["ws://192.168.42.129:8765", "ws://old:8765"], 0, tether=["ws://192.168.42.129:8765"])
+    assert out == ["ws://192.168.42.129:8765", "ws://old:8765"]

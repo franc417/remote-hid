@@ -263,6 +263,8 @@ def _reconnect_app(monkeypatch, tmp_path, fake_run_client):
     monkeypatch.setattr(gui, "backoff_delay", lambda n: 0.02)  # don't make the suite sit through real waits
     monkeypatch.setattr(gui, "local_ip", lambda: "10.0.0.5")
     monkeypatch.setattr(gui, "scan_subnet", lambda ip: [])  # no real network scanning in tests
+    monkeypatch.setattr(gui, "scan_anchor_ips", lambda: ["10.0.0.5"])  # one fake local subnet to scan
+    monkeypatch.setattr(gui, "tether_uris", lambda: [])  # no real `ip` calls either
     monkeypatch.setattr(gui, "prioritize", lambda targets: list(targets))  # no real probes either
     root = tk.Tk()
     return root, gui.App(root)
@@ -562,5 +564,86 @@ def test_disconnect_after_the_session_loop_already_ended_does_not_crash(monkeypa
         assert _wait(root, lambda: app.connect_button.cget("text") == "Connect")
         app.session.loop.close() if not app.session.loop.is_closed() else None
         app.disconnect()  # its loop is gone: must be a no-op, not a RuntimeError
+    finally:
+        app._on_close()
+
+
+# ------------------------------------------------ USB cable awareness
+
+def test_a_plugged_in_phone_is_tried_right_after_the_typed_address_and_before_remembered_ones(monkeypatch, tmp_path):
+    tried = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        tried.append(uri)
+        raise OSError("refused")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "tether_uris", lambda: ["ws://192.168.42.129:8765"])
+        reconnect.remember("ws://10.0.0.7:8765", gui.known_path(), gui.CONFIG_PATH)
+        app.uri_var.set("ws://10.0.0.9:8765")
+        app.connect()
+        assert _wait(root, lambda: len(tried) >= 3)
+        assert tried[:3] == ["ws://10.0.0.9:8765", "ws://192.168.42.129:8765", "ws://10.0.0.7:8765"]
+    finally:
+        app._on_close()
+
+
+def test_the_cable_address_is_re_read_every_round_so_a_changed_tether_subnet_is_followed(monkeypatch, tmp_path):
+    tried = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        tried.append(uri)
+        if uri == "ws://192.168.77.1:8765":
+            on_status(f"Connected to {uri}")
+            await asyncio.Event().wait()
+        raise OSError("refused")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        rounds = iter([["ws://192.168.42.129:8765"], ["ws://192.168.77.1:8765"]])
+        last = {"v": ["ws://192.168.42.129:8765"]}
+
+        def tether():
+            last["v"] = next(rounds, last["v"])
+            return last["v"]
+
+        monkeypatch.setattr(gui, "tether_uris", tether)
+        app.uri_var.set("ws://10.0.0.9:8765")
+        app.connect(persistent=True)
+        assert _wait(root, lambda: app.status_var.get().startswith("Connected to ws://192.168.77.1"), 8), tried
+    finally:
+        app._on_close()
+
+
+def test_an_empty_address_box_fills_itself_from_a_plugged_in_phone(monkeypatch, tmp_path):
+    seen = []
+
+    async def fake_run_client(uri, backend, on_status=None):
+        seen.append(uri)
+        on_status(f"Connected to {uri}")
+        await asyncio.Event().wait()
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        monkeypatch.setattr(gui, "tether_uris", lambda: ["ws://192.168.42.129:8765"])
+        app.uri_var.set("")
+        app.connect()
+        assert _wait(root, lambda: seen == ["ws://192.168.42.129:8765"])
+        assert app.uri_var.get() == "ws://192.168.42.129:8765"
+    finally:
+        app._on_close()
+
+
+def test_an_empty_address_box_with_no_cable_asks_for_an_address(monkeypatch, tmp_path):
+    async def fake_run_client(uri, backend, on_status=None):
+        raise AssertionError("must not connect")
+
+    root, app = _reconnect_app(monkeypatch, tmp_path, fake_run_client)
+    try:
+        app.uri_var.set("")
+        app.connect()
+        assert "Enter a full address" in app.status_var.get()
+        assert not app.connected
     finally:
         app._on_close()
