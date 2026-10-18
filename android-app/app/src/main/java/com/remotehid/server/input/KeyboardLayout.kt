@@ -392,11 +392,21 @@ object LayoutText {
 // ---------------------------------------------------------------- default layout
 
 /**
- * Letters, Fn, and two symbol layers laid out like Android's keyboard: a
- * comma and a full stop beside the space bar, an indented home row, a wide
- * shift and backspace, and the 123 pages (digits / @#$%&-+()/ / *"':;!? and
- * the =\< page with currency, math and brackets). Every layer sums to the same
- * total height so the keyboard never changes size when you switch layers.
+ * The default layout, built from the arrangement tested on the phone:
+ *
+ *  - letters: digits, qwerty, an indented home row, a wide shift and backspace,
+ *    a modifier row (esc, prtsc, win, ctrl, alt, fn) and a bottom row with the
+ *    comma and full stop beside a wide space bar. No row has more than ten
+ *    keys, so every key stays comfortably wide. The arrow keys are NOT here:
+ *    they live on the 123 page, where they are one tap away and do not crowd
+ *    the typing layer. (Tab is gone on purpose; prtsc took its place.)
+ *  - fn: F1 to F12 in two rows of six, and Home / PgUp / PgDn / End.
+ *  - symbols1 (123): Android's ?123 page, plus the arrow cluster with the
+ *    up arrow directly above the down arrow.
+ *  - symbols2 (=\<): Android's second symbols page.
+ *
+ * Every layer adds up to the same total height (6.0) so the keyboard never
+ * changes size when you switch layers: six rows of 1.0, or five of 1.2.
  *
  * Symbols come from real physical keys plus shift wherever one exists (what a
  * physical US keyboard sends); only characters with no physical key (euro,
@@ -411,44 +421,38 @@ object DefaultLayout {
 
     private fun letters(chars: String) = chars.map { k(it.toString(), "Key${it.uppercaseChar()}") }
     private fun digits() = "1234567890".map { k(it.toString(), "Digit$it") }
+    private fun fKeys(range: IntRange) = range.map { k("F$it", "F$it") }
 
-    private fun dock(fnActive: Boolean) = RowDef(
-        listOf(
-            k("esc", "Escape"),
-            if (fnActive) k("prtsc", "PrintScreen") else k("tab", "Tab"),
-            k("win", "Meta"),
-            k("ctrl", "ctrl"),
-            k("alt", "alt"),
-            k("fn", "layer:fn"),
-            k("◀", "ArrowLeft").let { if (fnActive) k("Home", "Home") else it },
-            k("▲", "ArrowUp").let { if (fnActive) k("PgUp", "PageUp") else it },
-            k("▼", "ArrowDown").let { if (fnActive) k("PgDn", "PageDown") else it },
-            k("▶", "ArrowRight").let { if (fnActive) k("End", "End") else it },
-        ),
+    /** esc, prtsc, win, ctrl, alt, fn: the same on every layer that has it. */
+    private fun modifiers() = listOf(
+        k("esc", "Escape"), k("prtsc", "PrintScreen"), k("win", "Meta"),
+        k("ctrl", "ctrl"), k("alt", "alt"), k("fn", "layer:fn"),
     )
 
     private fun bottom(backLabel: String, backLayer: String, comma: KeyDef = k(",", "Comma"), stop: KeyDef = k(".", "Period")) =
         RowDef(listOf(k(backLabel, "layer:$backLayer", 1.5f), comma, k("space", "Space", 5f), stop, k("enter", "Enter", 1.5f)))
 
-    private val fKeys = (1..12).map { k("F$it", "F$it") }
-
     private val lettersRows: List<RowDef> = listOf(
-        RowDef(digits() + k("-", "Minus") + k("=", "Equal")),
+        RowDef(digits()),
         RowDef(letters("qwertyuiop")),
         RowDef(listOf(gap(0.5f)) + letters("asdfghjkl") + gap(0.5f)),
-        RowDef(listOf(k("⇧", "shift", 1.5f)) + letters("zxcvbnm") + k("⌫", "Backspace", 1.5f)),
-        dock(fnActive = false),
+        RowDef(listOf(k("\u21E7", "shift", 1.5f)) + letters("zxcvbnm") + k("\u232B", "Backspace", 1.5f)),
+        RowDef(modifiers()),
         bottom("123", "symbols1"),
     )
 
     private val fnRows: List<RowDef> = listOf(
-        RowDef(fKeys),
-        lettersRows[1], lettersRows[2], lettersRows[3],
-        dock(fnActive = true),
-        bottom("123", "symbols1"),
+        RowDef(fKeys(1..6), 1.2f),
+        RowDef(fKeys(7..12), 1.2f),
+        RowDef(listOf(k("Home", "Home"), k("PgUp", "PageUp"), k("PgDn", "PageDown"), k("End", "End")), 1.2f),
+        RowDef(modifiers(), 1.2f),
+        bottom("123", "symbols1").copy(height = 1.2f),
     )
 
-    // Android's ?123 page. Five rows, each 1.2 high, so the layer is as tall as the six-row ones.
+    // Android's ?123 page with the arrow cluster. Row 3 has nine equal keys and the
+    // up arrow sits in row 2 above the down arrow: the widths in row 2 are chosen so
+    // both arrows share one column (up arrow's centre = 7.5 / 9 of the row, as the
+    // down arrow's is in row 3).
     private val symbols1Rows: List<RowDef> = listOf(
         RowDef(digits(), 1.2f),
         RowDef(
@@ -462,36 +466,38 @@ object DefaultLayout {
             listOf(k("=\\<", "layer:symbols2", 1.5f)) + listOf(
                 s("*", "Digit8"), s("\"", "Quote"), k("'", "Quote"), s(":", "Semicolon"),
                 k(";", "Semicolon"), s("!", "Digit1"), s("?", "Slash"),
-            ) + k("⌫", "Backspace", 1.5f),
+            ) + k("\u25B2", "ArrowUp", 1.21f) + k("\u232B", "Backspace", 1.21f),
             1.2f,
         ),
-        dock(fnActive = false).copy(height = 1.2f),
+        RowDef(modifiers() + listOf(k("\u25C0", "ArrowLeft"), k("\u25BC", "ArrowDown"), k("\u25B6", "ArrowRight")), 1.2f),
         bottom("ABC", "letters").copy(height = 1.2f),
     )
 
     // Android's =\< page.
     private val symbols2Rows: List<RowDef> = listOf(
-        RowDef(digits()),
+        RowDef(digits(), 1.2f),
         RowDef(
             listOf(
-                s("~", "Backquote"), k("`", "Backquote"), s("|", "Backslash"), u("•", "2022"), u("√", "221a"),
-                u("π", "3c0"), u("÷", "f7"), u("×", "d7"), u("¶", "b6"), u("∆", "2206"),
+                s("~", "Backquote"), k("`", "Backquote"), s("|", "Backslash"), u("\u2022", "2022"), u("\u221A", "221a"),
+                u("\u03C0", "3c0"), u("\u00F7", "f7"), u("\u00D7", "d7"), u("\u00B6", "b6"), u("\u2206", "2206"),
             ),
+            1.2f,
         ),
         RowDef(
             listOf(
-                u("£", "a3"), u("¢", "a2"), u("€", "20ac"), u("¥", "a5"), s("^", "Digit6"),
-                u("°", "b0"), k("=", "Equal"), s("{", "BracketLeft"), s("}", "BracketRight"), k("\\", "Backslash"),
+                u("\u00A3", "a3"), u("\u00A2", "a2"), u("\u20AC", "20ac"), u("\u00A5", "a5"), s("^", "Digit6"),
+                u("\u00B0", "b0"), k("=", "Equal"), s("{", "BracketLeft"), s("}", "BracketRight"), k("\\", "Backslash"),
             ),
+            1.2f,
         ),
         RowDef(
             listOf(k("?123", "layer:symbols1", 1.5f)) + listOf(
-                s("%", "Digit5"), u("©", "a9"), u("®", "ae"), u("™", "2122"), u("✓", "2713"),
+                s("%", "Digit5"), u("\u00A9", "a9"), u("\u00AE", "ae"), u("\u2122", "2122"), u("\u2713", "2713"),
                 k("[", "BracketLeft"), k("]", "BracketRight"),
-            ) + k("⌫", "Backspace", 1.5f),
+            ) + k("\u232B", "Backspace", 1.5f),
+            1.2f,
         ),
-        dock(fnActive = false),
-        bottom("ABC", "letters", comma = s("<", "Comma"), stop = s(">", "Period")),
+        bottom("ABC", "letters", comma = s("<", "Comma"), stop = s(">", "Period")).copy(height = 1.2f),
     )
 
     fun build(): LayoutDef = LayoutDef(

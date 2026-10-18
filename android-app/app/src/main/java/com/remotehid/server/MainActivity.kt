@@ -6,10 +6,16 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.graphics.Color
+import android.graphics.Typeface
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,14 +31,20 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.remotehid.server.input.KeyboardView
 import com.remotehid.server.input.LayoutText
 import com.remotehid.server.input.TrackpadView
+import com.remotehid.server.input.TypingModel
 import com.remotehid.server.net.RemoteHidService
+import com.remotehid.server.net.collectLocalAddresses
+import com.remotehid.server.net.describeAddresses
 import com.remotehid.server.protocol.mapToJson
-import java.net.InetAddress
 import java.net.Socket
 
 private const val PORT = 8765
 
-private const val KEYBOARD_LAYOUT_PREF = "keyboard_layout_v1"
+// v2: the default layout changed (arrows moved to 123, tab -> prtsc, larger keys). A layout saved
+// by the previous version is deliberately not loaded; copy/paste in the layout editor brings one back.
+private const val KEYBOARD_LAYOUT_PREF = "keyboard_layout_v2"
+private const val HAPTIC_LEVEL_PREF = "haptic_level"
+private const val STATUS_REFRESH_MS = 2000L
 
 class MainActivity : AppCompatActivity() {
 
@@ -45,6 +57,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var layoutButton: TextView
     private lateinit var qrPreview: PreviewView
     private lateinit var typingPreview: TextView
+    private lateinit var typingBar: View
+    private lateinit var typingLabel: TextView
+    private val typingModel = TypingModel()
+    private val uiHandler = Handler(Looper.getMainLooper())
     private var expanded = false
     private var inScanMode = false
     private lateinit var cameraController: LifecycleCameraController
@@ -67,8 +83,29 @@ class MainActivity : AppCompatActivity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val bound = (binder as RemoteHidService.LocalBinder).getService()
             service = bound
-            bound.onClientConnected = { runOnUiThread { statusText.text = "Client connected" } }
-            bound.onClientDisconnected = { runOnUiThread { statusText.text = statusLine() } }
+            bound.onClientConnected = {
+                runOnUiThread {
+                    typingModel.onDisconnected()  // a new session starts without any old field
+                    renderTyping()
+                    statusText.text = "Client connected"
+                }
+            }
+            bound.onClientDisconnected = {
+                runOnUiThread {
+                    typingModel.onDisconnected()
+                    renderTyping()
+                    statusText.text = statusLine()
+                }
+            }
+            // The desktop tells us which text box is focused and what is in it.
+            bound.onMessage = { msg ->
+                if (msg["t"] == "field") {
+                    runOnUiThread {
+                        typingModel.onFieldMessage(msg)
+                        renderTyping()
+                    }
+                }
+            }
             statusText.text = if (bound.isServerRunning) statusLine() else "Server not started"
         }
 
@@ -89,6 +126,8 @@ class MainActivity : AppCompatActivity() {
         layoutButton = findViewById(R.id.layoutButton)
         qrPreview = findViewById(R.id.qrPreview)
         typingPreview = findViewById(R.id.typingPreview)
+        typingBar = findViewById(R.id.typingBar)
+        typingLabel = findViewById(R.id.typingLabel)
 
         statusText.text = getString(R.string.status_idle)
 
@@ -102,13 +141,10 @@ class MainActivity : AppCompatActivity() {
             }
         }
         keyboard.onEvent = { event -> service?.sendToClient(mapToJson(event)) }
+        // Local echo: only used while the desktop is not reporting its real text field.
         keyboard.onPreviewTextChanged = { text ->
-            if (text.isEmpty()) {
-                typingPreview.visibility = View.GONE
-            } else {
-                typingPreview.visibility = View.VISIBLE
-                typingPreview.text = text
-            }
+            typingModel.onLocalEcho(text)
+            renderTyping()
         }
 
         expandButton.setOnClickListener { toggleExpanded() }
@@ -123,6 +159,8 @@ class MainActivity : AppCompatActivity() {
             uiPrefs.edit().putString(KEYBOARD_LAYOUT_PREF, LayoutText.serialize(layout)).apply()
         }
         keyboard.onEditModeChanged = { editing -> layoutButton.text = if (editing) "done" else "layout" }
+        keyboard.setVibrationLevel(uiPrefs.getInt(HAPTIC_LEVEL_PREF, 2))
+        keyboard.onHapticLevelChanged = { level -> uiPrefs.edit().putInt(HAPTIC_LEVEL_PREF, level).apply() }
         layoutButton.setOnClickListener {
             if (inScanMode) stopScanning()
             if (expanded) toggleExpanded()  // the keyboard has to be visible to edit it
@@ -236,9 +274,15 @@ class MainActivity : AppCompatActivity() {
                 val parts = rendezvousAddress.split(":")
                 val host = parts[0]
                 val port = parts[1].toInt()
-                val myAddress = "ws://${localIpAddress() ?: "unknown"}:$PORT"
                 Socket(host, port).use { socket ->
-                    socket.getOutputStream().write((myAddress + "\n").toByteArray())
+                    // The address this socket left from is, by definition, the one the desktop
+                    // can reach us on: the Wi-Fi address over Wi-Fi, the tether address over a
+                    // cable. (This used to always send the Wi-Fi address, wrong or missing
+                    // whenever the desktop was reached another way.)
+                    val reachable = socket.localAddress?.hostAddress?.takeIf { ':' !in it }
+                        ?: collectLocalAddresses().firstOrNull()?.ip
+                        ?: "unknown"
+                    socket.getOutputStream().write(("ws://$reachable:$PORT\n").toByteArray())
                 }
                 runOnUiThread { statusText.text = statusLine() }
             } catch (e: Exception) {
@@ -247,21 +291,48 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun statusLine(): String {
-        val ip = localIpAddress() ?: "unknown IP"
-        return "Listening on ws://$ip:$PORT"
+    private fun statusLine(): String = describeAddresses(collectLocalAddresses(), PORT)
+
+    /** Draws the typing bar from the model: the field's name, its text, and a caret. */
+    private fun renderTyping() {
+        val shown = typingModel.shown()
+        if (!shown.visible) {
+            typingBar.visibility = View.GONE
+            return
+        }
+        typingBar.visibility = View.VISIBLE
+        typingLabel.visibility = if (shown.label.isEmpty()) View.GONE else View.VISIBLE
+        typingLabel.text = shown.label
+        val text = SpannableStringBuilder(shown.before)
+        if (shown.caret) {
+            val start = text.length
+            text.append("|")
+            text.setSpan(ForegroundColorSpan(Color.WHITE), start, text.length, 0)
+            text.setSpan(StyleSpan(Typeface.BOLD), start, text.length, 0)
+        }
+        text.append(shown.after)
+        typingPreview.text = text
     }
 
-    private fun localIpAddress(): String? {
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val ipInt = wifiManager?.connectionInfo?.ipAddress ?: return null
-        if (ipInt == 0) return null
-        val bytes = byteArrayOf(
-            (ipInt and 0xff).toByte(),
-            (ipInt shr 8 and 0xff).toByte(),
-            (ipInt shr 16 and 0xff).toByte(),
-            (ipInt shr 24 and 0xff).toByte(),
-        )
-        return InetAddress.getByAddress(bytes).hostAddress
+    // While nothing is connected the addresses can change under us (cable plugged in, Wi-Fi
+    // joined); USB tethering is not a "network" Android notifies about, so just look again.
+    private val statusRefresh = object : Runnable {
+        override fun run() {
+            val current = statusText.text.toString()
+            if (service?.isServerRunning == true && (current.startsWith("Listening") || current.startsWith("No network"))) {
+                statusText.text = statusLine()
+            }
+            uiHandler.postDelayed(this, STATUS_REFRESH_MS)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        uiHandler.postDelayed(statusRefresh, STATUS_REFRESH_MS)
+    }
+
+    override fun onPause() {
+        uiHandler.removeCallbacks(statusRefresh)
+        super.onPause()
     }
 }

@@ -157,3 +157,20 @@ with a real security tradeoff worth reading before installing it.
 ## License
 
 MIT — see [`LICENSE`](./LICENSE).
+
+
+## Typing bar: seeing what is in the focused text box
+
+The phone's typing bar can show the text box you are really typing in (with the caret), read from the
+desktop through AT-SPI. It needs the Python bindings and the accessibility bus:
+
+- Arch: `sudo pacman -S python-gobject at-spi2-core`
+- Debian/Ubuntu: `sudo apt install python3-gi gir1.2-atspi-2.0 at-spi2-core`
+
+Browsers and Electron apps only expose their text boxes when accessibility is on. The client asks for it;
+on GNOME `gsettings set org.gnome.desktop.interface toolkit-accessibility true` makes it permanent, and for a
+Chromium-based browser `--force-renderer-accessibility` helps if a box is not detected.
+
+Without these packages everything else works and the phone shows a local echo of the keys it sent instead.
+Set `REMOTE_HID_NO_FIELD=1` to turn the feature off. Password boxes are never read: the phone only gets a row
+of bullets.

@@ -2,32 +2,30 @@ remote-hid keyboard layout v1
 # row <height> then keys:  label|code|weight|mods|unicode   (see the app's help)
 
 layer letters
-row 1.0  1|Digit1  2|Digit2  3|Digit3  4|Digit4  5|Digit5  6|Digit6  7|Digit7  8|Digit8  9|Digit9  0|Digit0  -|Minus  =|Equal
+row 1.0  1|Digit1  2|Digit2  3|Digit3  4|Digit4  5|Digit5  6|Digit6  7|Digit7  8|Digit8  9|Digit9  0|Digit0
 row 1.0  q|KeyQ  w|KeyW  e|KeyE  r|KeyR  t|KeyT  y|KeyY  u|KeyU  i|KeyI  o|KeyO  p|KeyP
 row 1.0  |spacer|0.5  a|KeyA  s|KeyS  d|KeyD  f|KeyF  g|KeyG  h|KeyH  j|KeyJ  k|KeyK  l|KeyL  |spacer|0.5
 row 1.0  ⇧|shift|1.5  z|KeyZ  x|KeyX  c|KeyC  v|KeyV  b|KeyB  n|KeyN  m|KeyM  ⌫|Backspace|1.5
-row 1.0  esc|Escape  tab|Tab  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn  ◀|ArrowLeft  ▲|ArrowUp  ▼|ArrowDown  ▶|ArrowRight
+row 1.0  esc|Escape  prtsc|PrintScreen  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn
 row 1.0  123|layer:symbols1|1.5  ,|Comma  space|Space|5.0  .|Period  enter|Enter|1.5
 
 layer fn
-row 1.0  F1|F1  F2|F2  F3|F3  F4|F4  F5|F5  F6|F6  F7|F7  F8|F8  F9|F9  F10|F10  F11|F11  F12|F12
-row 1.0  q|KeyQ  w|KeyW  e|KeyE  r|KeyR  t|KeyT  y|KeyY  u|KeyU  i|KeyI  o|KeyO  p|KeyP
-row 1.0  |spacer|0.5  a|KeyA  s|KeyS  d|KeyD  f|KeyF  g|KeyG  h|KeyH  j|KeyJ  k|KeyK  l|KeyL  |spacer|0.5
-row 1.0  ⇧|shift|1.5  z|KeyZ  x|KeyX  c|KeyC  v|KeyV  b|KeyB  n|KeyN  m|KeyM  ⌫|Backspace|1.5
-row 1.0  esc|Escape  prtsc|PrintScreen  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn  Home|Home  PgUp|PageUp  PgDn|PageDown  End|End
-row 1.0  123|layer:symbols1|1.5  ,|Comma  space|Space|5.0  .|Period  enter|Enter|1.5
+row 1.2  F1|F1  F2|F2  F3|F3  F4|F4  F5|F5  F6|F6
+row 1.2  F7|F7  F8|F8  F9|F9  F10|F10  F11|F11  F12|F12
+row 1.2  Home|Home  PgUp|PageUp  PgDn|PageDown  End|End
+row 1.2  esc|Escape  prtsc|PrintScreen  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn
+row 1.2  123|layer:symbols1|1.5  ,|Comma  space|Space|5.0  .|Period  enter|Enter|1.5
 
 layer symbols1
 row 1.2  1|Digit1  2|Digit2  3|Digit3  4|Digit4  5|Digit5  6|Digit6  7|Digit7  8|Digit8  9|Digit9  0|Digit0
 row 1.2  @|Digit2|1.0|shift  #|Digit3|1.0|shift  $|Digit4|1.0|shift  %|Digit5|1.0|shift  &|Digit7|1.0|shift  -|Minus  +|Equal|1.0|shift  (|Digit9|1.0|shift  )|Digit0|1.0|shift  /|Slash
-row 1.2  =\\<|layer:symbols2|1.5  *|Digit8|1.0|shift  "|Quote|1.0|shift  '|Quote  :|Semicolon|1.0|shift  ;|Semicolon  !|Digit1|1.0|shift  ?|Slash|1.0|shift  ⌫|Backspace|1.5
-row 1.2  esc|Escape  tab|Tab  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn  ◀|ArrowLeft  ▲|ArrowUp  ▼|ArrowDown  ▶|ArrowRight
+row 1.2  =\\<|layer:symbols2|1.5  *|Digit8|1.0|shift  "|Quote|1.0|shift  '|Quote  :|Semicolon|1.0|shift  ;|Semicolon  !|Digit1|1.0|shift  ?|Slash|1.0|shift  ▲|ArrowUp|1.21  ⌫|Backspace|1.21
+row 1.2  esc|Escape  prtsc|PrintScreen  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn  ◀|ArrowLeft  ▼|ArrowDown  ▶|ArrowRight
 row 1.2  ABC|layer:letters|1.5  ,|Comma  space|Space|5.0  .|Period  enter|Enter|1.5
 
 layer symbols2
-row 1.0  1|Digit1  2|Digit2  3|Digit3  4|Digit4  5|Digit5  6|Digit6  7|Digit7  8|Digit8  9|Digit9  0|Digit0
-row 1.0  ~|Backquote|1.0|shift  `|Backquote  \||Backslash|1.0|shift  •|unicode|1.0||2022  √|unicode|1.0||221a  π|unicode|1.0||3c0  ÷|unicode|1.0||f7  ×|unicode|1.0||d7  ¶|unicode|1.0||b6  ∆|unicode|1.0||2206
-row 1.0  £|unicode|1.0||a3  ¢|unicode|1.0||a2  €|unicode|1.0||20ac  ¥|unicode|1.0||a5  ^|Digit6|1.0|shift  °|unicode|1.0||b0  =|Equal  {|BracketLeft|1.0|shift  }|BracketRight|1.0|shift  \\|Backslash
-row 1.0  ?123|layer:symbols1|1.5  %|Digit5|1.0|shift  ©|unicode|1.0||a9  ®|unicode|1.0||ae  ™|unicode|1.0||2122  ✓|unicode|1.0||2713  [|BracketLeft  ]|BracketRight  ⌫|Backspace|1.5
-row 1.0  esc|Escape  tab|Tab  win|Meta  ctrl|ctrl  alt|alt  fn|layer:fn  ◀|ArrowLeft  ▲|ArrowUp  ▼|ArrowDown  ▶|ArrowRight
-row 1.0  ABC|layer:letters|1.5  <|Comma|1.0|shift  space|Space|5.0  >|Period|1.0|shift  enter|Enter|1.5
+row 1.2  1|Digit1  2|Digit2  3|Digit3  4|Digit4  5|Digit5  6|Digit6  7|Digit7  8|Digit8  9|Digit9  0|Digit0
+row 1.2  ~|Backquote|1.0|shift  `|Backquote  \||Backslash|1.0|shift  •|unicode|1.0||2022  √|unicode|1.0||221a  π|unicode|1.0||3c0  ÷|unicode|1.0||f7  ×|unicode|1.0||d7  ¶|unicode|1.0||b6  ∆|unicode|1.0||2206
+row 1.2  £|unicode|1.0||a3  ¢|unicode|1.0||a2  €|unicode|1.0||20ac  ¥|unicode|1.0||a5  ^|Digit6|1.0|shift  °|unicode|1.0||b0  =|Equal  {|BracketLeft|1.0|shift  }|BracketRight|1.0|shift  \\|Backslash
+row 1.2  ?123|layer:symbols1|1.5  %|Digit5|1.0|shift  ©|unicode|1.0||a9  ®|unicode|1.0||ae  ™|unicode|1.0||2122  ✓|unicode|1.0||2713  [|BracketLeft  ]|BracketRight  ⌫|Backspace|1.5
+row 1.2  ABC|layer:letters|1.5  <|Comma|1.0|shift  space|Space|5.0  >|Period|1.0|shift  enter|Enter|1.5

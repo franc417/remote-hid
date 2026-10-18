@@ -33,12 +33,17 @@ private val BORDER_COLOR = Color.parseColor("#2B2B30")
 private val BORDER_PRESSED_COLOR = Color.parseColor("#55555E")
 private val TEXT_COLOR_LIGHT = Color.parseColor("#EDEDED")
 private val TEXT_COLOR_DARK = Color.parseColor("#0B0B0C")
-private const val ROW_HEIGHT_DP = 52f
-private const val KEY_RADIUS_DP = 10f
-private const val KEY_MARGIN_DP = 3f
-private const val BOARD_PADDING_DP = 4f
-private const val KEY_TEXT_SP = 17f
-private const val WORD_TEXT_SP = 12f  // multi-character labels: esc, ctrl, space, PgUp, F10...
+// Row height follows the screen (about 7.3% of its height, between 56 and 72dp) so the
+// keys are comfortably tall on a big phone without swallowing the trackpad on a small one.
+private const val ROW_HEIGHT_FRACTION = 0.073f
+private const val MIN_ROW_DP = 56f
+private const val MAX_ROW_DP = 72f
+private const val KEY_RADIUS_DP = 12f
+private const val KEY_MARGIN_DP = 3f        // sideways: small, so ten keys in a row stay wide
+private const val KEY_MARGIN_V_DP = 4f      // up and down: more air between rows
+private const val BOARD_PADDING_DP = 6f
+private const val KEY_TEXT_SP = 19f
+private const val WORD_TEXT_SP = 13f  // multi-character labels: esc, ctrl, space, PgUp, F10...
 private const val PRESS_SCALE = 0.95f
 private const val PREVIEW_MAX_CHARS = 200
 
@@ -104,12 +109,22 @@ class KeyboardView @JvmOverloads constructor(
     var onLayoutChanged: ((LayoutDef) -> Unit)? = null
     var onEditModeChanged: ((Boolean) -> Unit)? = null
 
+    /** Called when the vibration strength is changed from the edit bar, so the host can save it. */
+    var onHapticLevelChanged: ((Int) -> Unit)? = null
+
+    /** Vibration for key presses (see Haptics). */
+    val haptics = Haptics(context)
+
     private val previewBuffer = StringBuilder()
 
     private val density = resources.displayMetrics.density
     private val keyRadiusPx = KEY_RADIUS_DP * density
-    private val rowHeightPx = (ROW_HEIGHT_DP * density).toInt()
+    private val rowHeightPx = run {
+        val screenDp = resources.displayMetrics.heightPixels / density
+        ((screenDp * ROW_HEIGHT_FRACTION).coerceIn(MIN_ROW_DP, MAX_ROW_DP) * density).toInt()
+    }
     private val keyMarginPx = (KEY_MARGIN_DP * density).toInt()
+    private val keyMarginVPx = (KEY_MARGIN_V_DP * density).toInt()
     private val strokePx = maxOf(1, density.toInt())
     private val keyTypeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop
@@ -133,6 +148,7 @@ class KeyboardView @JvmOverloads constructor(
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT)
     }
     private val editInfo = TextView(context)
+    private lateinit var vibrationChip: TextView
     private val editBar = HorizontalScrollView(context)
     private var resetArmedAt = 0L
 
@@ -213,7 +229,7 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun buildKeyView(key: KeyDef, selected: Boolean): View {
         val params = LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, key.weight).apply {
-            setMargins(keyMarginPx, keyMarginPx, keyMarginPx, keyMarginPx)
+            setMargins(keyMarginPx, keyMarginVPx, keyMarginPx, keyMarginVPx)
         }
 
         if (key.isSpacer) {
@@ -247,8 +263,10 @@ class KeyboardView @JvmOverloads constructor(
         view.setOnTouchListener { v, e ->
             if (!editMode) {
                 when (e.actionMasked) {
-                    MotionEvent.ACTION_DOWN ->
+                    MotionEvent.ACTION_DOWN -> {
+                        haptics.tick()  // on touch-down, so it feels instant rather than after release
                         v.animate().scaleX(PRESS_SCALE).scaleY(PRESS_SCALE).setDuration(50).start()
+                    }
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                         v.animate().scaleX(1f).scaleY(1f).setDuration(90).start()
                 }
@@ -257,7 +275,6 @@ class KeyboardView @JvmOverloads constructor(
         }
 
         view.setOnClickListener {
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             onKeyTapped(key, view, restColor, restPressedColor)
         }
 
@@ -377,9 +394,26 @@ class KeyboardView @JvmOverloads constructor(
         strip.addView(chip("copy") { copyLayout() })
         strip.addView(chip("paste") { pasteLayout() })
         strip.addView(chip("reset") { resetLayout() })
+        vibrationChip = chip(vibrationLabel()) { cycleVibration() }
+        strip.addView(vibrationChip)
         strip.addView(editInfo)
         editBar.addView(strip)
         updateEditInfo()
+    }
+
+    private fun vibrationLabel() = "vibration: " + listOf("off", "light", "medium", "strong")[haptics.level.coerceIn(0, 3)]
+
+    private fun cycleVibration() {
+        haptics.level = (haptics.level + 1) % 4
+        vibrationChip.text = vibrationLabel()
+        haptics.tick()  // let the new strength be felt straight away
+        onHapticLevelChanged?.invoke(haptics.level)
+    }
+
+    /** Restores a saved vibration strength (0 off ... 3 strong). */
+    fun setVibrationLevel(level: Int) {
+        haptics.level = level.coerceIn(0, 3)
+        if (::vibrationChip.isInitialized) vibrationChip.text = vibrationLabel()
     }
 
     private fun selectedKeyDef(): KeyDef? = currentRows().getOrNull(selRow)?.keys?.getOrNull(selKey)

@@ -12,8 +12,13 @@ Tap **layout** in the top bar. Then:
 - Buttons for exact steps: `◀ move`, `move ▶`, `− width`, `+ width`, `− height`, `+ height` (height applies to the selected key's row).
 - **next layer** cycles letters, fn, symbols1, symbols2 so you can edit each one.
 - **copy** puts the whole layout on the clipboard as text. **paste** applies a layout from the clipboard (errors are listed with line numbers and nothing changes).
+- **vibration** cycles off / light / medium / strong (each press vibrates on touch-down; the strength is saved).
 - **reset** restores the default (tap it twice).
 - Every change is saved automatically.
+
+## The default layout
+
+Letters: digits, qwerty, the indented home row, shift and backspace, a modifier row (esc, prtsc, win, ctrl, alt, fn), and a bottom row with 123, comma, space, full stop and enter. The arrow keys are on the 123 page (up arrow above down arrow), not on the letters page. fn shows F1 to F12 and Home / PgUp / PgDn / End. The 123 and =\\< pages follow Android's.
 
 ## The text format
 

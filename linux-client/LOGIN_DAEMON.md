@@ -136,3 +136,12 @@ simulate it in the environment this was written in.
   daemon pings every 5s (5s timeout) and also watches the tether gateway: when
   it disappears or changes, the session is dropped at once and the daemon
   picks up the new interface. Both used to wait ten minutes.
+
+## How the cable is recognised (netinfo.py, shared with the GUI)
+
+An interface counts as a USB tether if sysfs says its device sits on the USB bus or uses a phone-class driver
+(rndis_host, cdc_ether, cdc_ncm, cdc_eem, ipheth). That does not depend on the interface's name, so `eth1`,
+`enx<mac>` and `usb0` all work. Interface-name patterns remain as a fallback. The phone's address is the default
+route's gateway on that interface, or, if DHCP gave none, the ARP neighbour on the link. The GUI uses the same code:
+a plugged-in phone is tried right after the typed address on every connection round, and an empty address box fills
+itself from it.

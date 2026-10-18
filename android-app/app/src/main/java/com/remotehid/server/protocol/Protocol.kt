@@ -19,7 +19,10 @@ const val MSG_CLICK = "click"
 const val MSG_SCROLL = "scroll"
 const val MSG_KEY = "key"
 
-val VALID_TYPES = setOf(MSG_MOVE, MSG_CLICK, MSG_SCROLL, MSG_KEY)
+/** Desktop -> phone: the state of the focused text field (see linux-client/fieldwatch.py). */
+const val MSG_FIELD = "field"
+
+val VALID_TYPES = setOf(MSG_MOVE, MSG_CLICK, MSG_SCROLL, MSG_KEY, MSG_FIELD)
 val VALID_BUTTONS = setOf("left", "right", "middle")
 val VALID_CLICK_ACTIONS = setOf("click", "down", "up")
 val VALID_KEY_ACTIONS = setOf("down", "up")
@@ -54,6 +57,24 @@ fun parseMessage(raw: Map<String, Any?>): Map<String, Any?> {
             val action = raw["action"] as? String ?: "click"
             if (action !in VALID_CLICK_ACTIONS) {
                 throw ProtocolError("invalid click action: $action")
+            }
+        }
+
+        MSG_FIELD -> {
+            // Only `focused` is required. A field that lost focus carries nothing else.
+            if (raw["focused"] !is Boolean) {
+                throw ProtocolError("'focused' must be true or false, got ${raw["focused"]}")
+            }
+            val text = raw["text"]
+            if (text != null && text !is String) throw ProtocolError("'text' must be a string")
+            val name = raw["name"]
+            if (name != null && name !is String) throw ProtocolError("'name' must be a string")
+            val password = raw["password"]
+            if (password != null && password !is Boolean) throw ProtocolError("'password' must be true or false")
+            val caret = raw["caret"]
+            if (caret != null) {
+                requireNumber(raw, "caret")
+                if ((caret as Number).toDouble() < 0) throw ProtocolError("'caret' must not be negative")
             }
         }
 

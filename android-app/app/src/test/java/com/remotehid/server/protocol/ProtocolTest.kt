@@ -95,4 +95,31 @@ class ProtocolTest {
             parseMessage(mapOf("dx" to 1, "dy" to 1))
         }
     }
+
+    @Test
+    fun `field message with text and caret passes through unchanged`() {
+        val msg = mapOf("t" to "field", "focused" to true, "text" to "cats", "caret" to 2, "password" to false, "name" to "Search")
+        assertEquals(msg, parseMessage(msg))
+    }
+
+    @Test
+    fun `field message that lost focus needs nothing else`() {
+        val msg = mapOf("t" to "field", "focused" to false)
+        assertEquals(msg, parseMessage(msg))
+    }
+
+    @Test
+    fun `field message needs a boolean focused`() {
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field")) }
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to "yes")) }
+    }
+
+    @Test
+    fun `field message rejects wrong types and a negative caret`() {
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to true, "text" to 5)) }
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to true, "name" to 5)) }
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to true, "password" to "x")) }
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to true, "caret" to -1)) }
+        assertThrows(ProtocolError::class.java) { parseMessage(mapOf("t" to "field", "focused" to true, "caret" to "2")) }
+    }
 }

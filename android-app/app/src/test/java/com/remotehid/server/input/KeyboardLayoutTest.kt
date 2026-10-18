@@ -25,14 +25,6 @@ class KeyboardLayoutTest {
     }
 
     @Test
-    fun `every row fills the same width`() {
-        for (layer in default.layers) for ((i, row) in layer.rows.withIndex()) {
-            val expected = if (i == 0 && (layer.name == "letters" || layer.name == "fn")) 12f else 10f
-            near(expected, row.totalWeight, 0.001f)
-        }
-    }
-
-    @Test
     fun `default layout uses only valid codes and existing layers`() {
         val names = default.layers.map { it.name }.toSet()
         for (layer in default.layers) for (row in layer.rows) for (key in row.keys) {
@@ -54,20 +46,6 @@ class KeyboardLayoutTest {
     }
 
     @Test
-    fun `symbols page one matches Android's 123 page`() {
-        val rows = default.layer("symbols1")!!.rows
-        fun labels(i: Int) = rows[i].keys.map { it.label }
-        assertEquals(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"), labels(0))
-        assertEquals(listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/"), labels(1))
-        assertEquals(listOf("=\\<", "*", "\"", "'", ":", ";", "!", "?", "⌫"), labels(2))
-        val at = rows[1].keys[0]
-        assertEquals("Digit2", at.code)
-        assertEquals(listOf("shift"), at.mods) // "@" is Shift+2 on a physical keyboard
-        val bottom = rows.last().keys
-        assertEquals(listOf("ABC", ",", "space", ".", "enter"), bottom.map { it.label })
-    }
-
-    @Test
     fun `symbols page two has the currency and bracket page with angle brackets by the space bar`() {
         val rows = default.layer("symbols2")!!.rows
         assertEquals(listOf("~", "`", "|", "•", "√", "π", "÷", "×", "¶", "∆"), rows[1].keys.map { it.label })
@@ -78,10 +56,71 @@ class KeyboardLayoutTest {
     }
 
     @Test
-    fun `the fn layer swaps in F keys and navigation keys`() {
+    fun `no row has more than ten keys so every key stays comfortably wide`() {
+        for (layer in default.layers) for ((i, row) in layer.rows.withIndex()) {
+            assertTrue("${layer.name} row $i has ${row.keys.size} keys", row.keys.count { !it.isSpacer } <= 10)
+        }
+    }
+
+    @Test
+    fun `the letters layer has ten digits then the modifier row esc prtsc win ctrl alt fn`() {
+        val rows = default.layer("letters")!!.rows
+        assertEquals(10, rows[0].keys.size)
+        assertEquals(listOf("esc", "prtsc", "win", "ctrl", "alt", "fn"), rows[4].keys.map { it.label })
+    }
+
+    @Test
+    fun `arrow keys are on the 123 layer and not on the letters layer`() {
+        val arrows = setOf("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight")
+        fun codes(layer: String) = default.layer(layer)!!.rows.flatMap { r -> r.keys.map { it.code } }
+        assertTrue(codes("letters").none { it in arrows })
+        assertTrue(codes("symbols1").containsAll(arrows))
+    }
+
+    @Test
+    fun `tab is gone everywhere and prtsc took its place`() {
+        for (layer in default.layers) {
+            assertTrue("tab on ${layer.name}", layer.rows.flatMap { it.keys }.none { it.code == "Tab" || it.label == "tab" })
+        }
+        assertTrue(default.layer("letters")!!.rows.flatMap { it.keys }.any { it.code == "PrintScreen" })
+        assertTrue(default.layer("symbols1")!!.rows.flatMap { it.keys }.any { it.code == "PrintScreen" })
+    }
+
+    @Test
+    fun `symbols page one matches Android's 123 page plus the arrow cluster`() {
+        val rows = default.layer("symbols1")!!.rows
+        fun labels(i: Int) = rows[i].keys.map { it.label }
+        assertEquals(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"), labels(0))
+        assertEquals(listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/"), labels(1))
+        assertEquals(listOf("=\\<", "*", "\"", "'", ":", ";", "!", "?", "\u25B2", "\u232B"), labels(2))
+        assertEquals(listOf("esc", "prtsc", "win", "ctrl", "alt", "fn", "\u25C0", "\u25BC", "\u25B6"), labels(3))
+        val at = rows[1].keys[0]
+        assertEquals("Digit2", at.code)
+        assertEquals(listOf("shift"), at.mods) // "@" is Shift+2 on a physical keyboard
+        assertEquals(listOf("ABC", ",", "space", ".", "enter"), rows.last().keys.map { it.label })
+    }
+
+    @Test
+    fun `the up arrow sits directly above the down arrow`() {
+        val rows = default.layer("symbols1")!!.rows
+        fun centre(row: RowDef, code: String): Float {
+            var before = 0f
+            for (k in row.keys) {
+                if (k.code == code) return (before + k.weight / 2f) / row.totalWeight
+                before += k.weight
+            }
+            error("no $code")
+        }
+        near(centre(rows[3], "ArrowDown"), centre(rows[2], "ArrowUp"), 0.01f)
+    }
+
+    @Test
+    fun `the fn layer has F1 to F12 in two rows of six and the navigation keys`() {
         val rows = default.layer("fn")!!.rows
-        assertEquals((1..12).map { "F$it" }, rows[0].keys.map { it.label })
-        assertEquals(listOf("Home", "PgUp", "PgDn", "End"), rows[4].keys.takeLast(4).map { it.label })
+        assertEquals((1..6).map { "F$it" }, rows[0].keys.map { it.label })
+        assertEquals((7..12).map { "F$it" }, rows[1].keys.map { it.label })
+        assertEquals(listOf("Home", "PgUp", "PgDn", "End"), rows[2].keys.map { it.label })
+        assertEquals(listOf("esc", "prtsc", "win", "ctrl", "alt", "fn"), rows[3].keys.map { it.label })
     }
 
     // ---------------------------------------------------------- text round trip

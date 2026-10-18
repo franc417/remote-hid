@@ -59,3 +59,26 @@ A client that receives a message it can't parse (wrong types, unknown
 connection — one bad frame shouldn't end the session. See
 `linux-client/protocol.py::parse_message` and
 `linux-client/handler.py::handle_message`.
+
+
+## Desktop -> phone: `field` (typing bar)
+
+The WebSocket is two-way. Besides the phone's input events, the desktop client sends the state of the
+text field that currently has keyboard focus, so the phone's typing bar shows what is really in the box
+(not a guess from the keys that were tapped).
+
+```json
+{"t": "field", "focused": true, "text": "hello wor", "caret": 9, "password": false, "name": "Search"}
+{"t": "field", "focused": false}
+```
+
+- `focused` (required, boolean): false means no text field has focus; nothing else is sent and the bar hides.
+- `text`: the caret's own line, trimmed to a window around the caret with `…` where it was cut.
+- `caret`: index into `text` (0 to length).
+- `password`: true for a password box. `text` is then only bullet characters (the real text is never read
+  or sent), and the phone shows bullets regardless.
+- `name`: the field's accessible name (often its label), shown as a caption.
+
+The newest state wins: if the link is slow, intermediate states are dropped rather than queued. A desktop
+that cannot read text fields (no AT-SPI) simply never sends this message, and the phone falls back to a local
+echo of the keys it sent.

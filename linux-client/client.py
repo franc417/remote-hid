@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import websockets
 
+import fieldwatch
 from handler import handle_message
 from protocol import REPLACED_REASON, SessionReplaced
 
@@ -73,19 +74,40 @@ async def _read_loop(ws, backend, tag: str = "[client]") -> None:
         handle_message(msg, backend)
 
 
+async def _send_fields(ws, box) -> None:
+    """Sends the newest text-field state to the phone whenever it changes."""
+    while True:
+        msg = await box.get()
+        try:
+            await ws.send(json.dumps(msg))
+        except websockets.exceptions.ConnectionClosed:
+            return
+
+
 async def relay_session(ws, backend, host: str, tag: str = "[client]") -> None:
     """Relays until the connection ends or the network path to the phone
     changes. Raises SessionReplaced if the phone gave our session to a
     newer connection, ConnectionError if the path changed under us."""
     reader = asyncio.ensure_future(_read_loop(ws, backend, tag))
     watcher = asyncio.ensure_future(_route_changed(host))
+    tasks = [reader, watcher]
+
+    # Mirror the focused text field to the phone, if this desktop can read it.
+    field = fieldwatch.get_watcher()
+    if field is not None:
+        box = fieldwatch.LatestBox(asyncio.get_running_loop())
+        tasks.append(asyncio.ensure_future(_send_fields(ws, box)))
+        field.set_sink(box.put)  # also sends the current state right away
+
     try:
         await asyncio.wait({reader, watcher}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for task in (reader, watcher):
+        if field is not None:
+            field.set_sink(None)
+        for task in tasks:
             if not task.done():
                 task.cancel()
-        results = await asyncio.gather(reader, watcher, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
     if reader.done() and not reader.cancelled():
         exc = results[0]
         if isinstance(exc, Exception):

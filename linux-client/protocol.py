@@ -27,6 +27,25 @@ class SessionReplaced(Exception):
     """The phone handed this session to a newer connection."""
 
 
+def make_field_message(focused: bool, text: str = "", caret: int = 0, password: bool = False, name: str = "") -> dict:
+    """Desktop -> phone: the state of the focused text field, so the phone's
+    typing bar shows what is really in the box (see fieldwatch.py).
+    `focused` False means no text field has focus (the bar hides). `caret` is
+    an index into `text`. For a password field `text` is only bullets."""
+    if not isinstance(focused, bool):
+        raise ProtocolError("field.focused must be a boolean")
+    if not focused:
+        return {"t": "field", "focused": False}
+    if not isinstance(text, str):
+        raise ProtocolError("field.text must be a string")
+    if not isinstance(caret, int) or isinstance(caret, bool) or caret < 0:
+        raise ProtocolError("field.caret must be a non-negative integer")
+    return {
+        "t": "field", "focused": True, "text": text, "caret": min(caret, len(text)),
+        "password": bool(password), "name": str(name or ""),
+    }
+
+
 class ProtocolError(ValueError):
     """Raised when an incoming message fails validation."""
 

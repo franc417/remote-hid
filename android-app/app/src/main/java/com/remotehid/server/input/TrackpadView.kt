@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Shader
-import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
@@ -129,21 +128,6 @@ class TrackpadView @JvmOverloads constructor(
         style = Paint.Style.FILL
         color = Color.WHITE
     }
-    private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textAlign = Paint.Align.CENTER
-        textSize = dp(13f)
-        letterSpacing = 0.18f
-        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    }
-    private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textAlign = Paint.Align.CENTER
-        textSize = dp(11f)
-        letterSpacing = 0.04f
-        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-    }
-
     init {
         // A faint dot grid, built once as a tiny tile and repeated by a
         // shader, so drawing it costs one fill per frame.
@@ -323,20 +307,6 @@ class TrackpadView @JvmOverloads constructor(
         } else {
             val since = now - releasedAt
             if (since >= RELEASE_FADE_MS) 0f else 1f - since.toFloat() / RELEASE_FADE_MS
-        }
-
-        // Idle hint, fading out as soon as a finger lands.
-        val hintAlpha = 1f - presence
-        if (hintAlpha > 0f) {
-            val cx = panelRect.centerX()
-            val cy = panelRect.centerY()
-            titlePaint.alpha = (70 * hintAlpha).toInt()
-            hintPaint.alpha = (46 * hintAlpha).toInt()
-            canvas.drawText("TRACKPAD", cx, cy, titlePaint)
-            canvas.drawText(
-                "tap  \u00B7  drag  \u00B7  two-finger scroll  \u00B7  three-finger swipe",
-                cx, cy + dp(24f), hintPaint,
-            )
         }
 
         // A ring and centre dot under each finger; the fill is brighter
