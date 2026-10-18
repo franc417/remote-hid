@@ -182,3 +182,17 @@ The desktop window has a **Find phone** button: it looks for the phone on a USB 
 network this computer is on, and connects to what it finds. Nothing needs to be scanned or typed. The phone shows its
 own addresses (Wi-Fi and USB) at the top of the app if you prefer to type one. The QR code is still there; it is now
 drawn large with the full quiet zone, which is what small phone cameras need.
+
+
+## Starting the GUI with one word
+
+```
+cd linux-client
+./install.sh                         # uses your active venv's python, else python3
+./install.sh --python /path/to/python   # or pick the interpreter yourself
+```
+
+This puts a `remote-hid` command in `~/.local/bin` and an app-menu entry (with the logo), then you just run
+`remote-hid` or click it in your launcher. It runs `gui.py` from this checkout, so `git pull` updates it. It tells
+you if the chosen python is missing a package. `./install.sh --uninstall` removes it. If `~/.local/bin` is not on
+your PATH it tells you the one line to add.
