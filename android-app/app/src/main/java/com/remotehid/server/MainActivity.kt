@@ -40,9 +40,10 @@ import java.net.Socket
 
 private const val PORT = 8765
 
-// v2: the default layout changed (arrows moved to 123, tab -> prtsc, larger keys). A layout saved
-// by the previous version is deliberately not loaded; copy/paste in the layout editor brings one back.
-private const val KEYBOARD_LAYOUT_PREF = "keyboard_layout_v2"
+// v3: fn now works in place (no separate page) and esc/prtsc moved above 1 and 0. A layout saved by
+// an earlier build is deliberately not loaded so the new arrangement shows up; the layout editor's
+// copy/paste can bring an old one back (its old fn page is converted to the fn toggle on the way in).
+private const val KEYBOARD_LAYOUT_PREF = "keyboard_layout_v3"
 private const val HAPTIC_LEVEL_PREF = "haptic_level"
 private const val STATUS_REFRESH_MS = 2000L
 

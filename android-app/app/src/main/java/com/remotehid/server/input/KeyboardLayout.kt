@@ -22,6 +22,14 @@ const val CODE_SPACER = "spacer"
 /** `layer:<name>` switches to another layer (123, ABC, fn, =\<). */
 const val CODE_LAYER_PREFIX = "layer:"
 
+/**
+ * The fn toggle. While it is on, keys that have a function-key meaning change IN PLACE
+ * (see FnMap): the digits become F1..F10, esc F11, prtsc F12, the arrows Home/PgUp/PgDn/End.
+ * It is not a page of its own. (Older layout text used `layer:fn`; the parser still accepts
+ * that and treats it as this toggle.)
+ */
+const val CODE_FN = "fn"
+
 /** A character with no physical key, sent through the Ctrl+Shift+U sequence; needs `unicode` hex. */
 const val CODE_UNICODE = "unicode"
 
@@ -50,6 +58,28 @@ val PHYSICAL_CODES: Set<String> = buildSet {
     )
 }
 
+/** What each key becomes while fn is on. Only plain keys (no forced modifiers) are remapped. */
+object FnMap {
+    private val codes: Map<String, String> = buildMap {
+        for (d in 1..9) put("Digit$d", "F$d")
+        put("Digit0", "F10")
+        put("Escape", "F11")
+        put("PrintScreen", "F12")
+        put("ArrowLeft", "Home")
+        put("ArrowUp", "PageUp")
+        put("ArrowDown", "PageDown")
+        put("ArrowRight", "End")
+    }
+
+    fun forCode(code: String): String? = codes[code]
+
+    fun label(code: String): String = when (code) {
+        "PageUp" -> "PgUp"
+        "PageDown" -> "PgDn"
+        else -> code
+    }
+}
+
 data class KeyDef(
     val label: String,
     val code: String,
@@ -62,7 +92,18 @@ data class KeyDef(
     val isSpacer: Boolean get() = code == CODE_SPACER
     val isSticky: Boolean get() = code in STICKY_MODS
     val layerTarget: String? get() = if (code.startsWith(CODE_LAYER_PREFIX)) code.removePrefix(CODE_LAYER_PREFIX) else null
-    val isModifierLook: Boolean get() = code == "ctrl" || code == "alt" || code == "Meta" || layerTarget != null
+    val isFnToggle: Boolean get() = code == CODE_FN
+    val isModifierLook: Boolean get() = code == "ctrl" || code == "alt" || code == "Meta" || layerTarget != null || isFnToggle
+
+    /**
+     * This key as it should look and act while fn is on, or null if fn leaves it alone. "@" is
+     * Shift+2, so it is left alone (it has a forced modifier); the plain "2" becomes F2.
+     */
+    fun fnVariant(): KeyDef? {
+        if (mods.isNotEmpty() || isSticky || isSpacer || isFnToggle || layerTarget != null || code == CODE_UNICODE) return null
+        val fnCode = FnMap.forCode(code) ?: return null
+        return KeyDef(FnMap.label(fnCode), fnCode, weight)
+    }
 }
 
 data class RowDef(val keys: List<KeyDef>, val height: Float = 1f) {
@@ -188,7 +229,8 @@ object LayoutEditor {
  * `label|code|weight|mods|unicode`; only label and code are required. Inside a
  * label write \| for a pipe, \\ for a backslash and \s for a space. `mods` is a
  * comma list of shift, ctrl, alt, meta. The code is a key name (KeyQ, Comma,
- * Enter...), shift/ctrl/alt (sticky), layer:<name>, spacer, or unicode.
+ * Enter...), shift/ctrl/alt (sticky), fn (toggles function keys in place),
+ * layer:<name>, spacer, or unicode.
  */
 object LayoutText {
 
@@ -320,6 +362,8 @@ object LayoutText {
             }
         }
 
+        layers.removeAll { it.name == "fn" }  // the old separate fn page no longer exists
+
         if (!sawHeader) errors.add("empty: expected \"$HEADER\" on the first line")
         if (sawHeader && layers.isEmpty() && errors.isEmpty()) errors.add("no layers: add a \"layer <name>\" line")
         for (layer in layers) if (layer.rowLines == 0) errors.add("layer \"${layer.name}\" has no rows")
@@ -345,11 +389,12 @@ object LayoutText {
             return null
         }
         val label = unescapeLabel(f[0])
-        val code = f[1]
+        // Older layouts used a separate "fn" page: that key is now the in-place fn toggle.
+        val code = if (f[1] == "layer:fn") CODE_FN else f[1]
         var ok = true
 
         val validCode = code in PHYSICAL_CODES || code in STICKY_MODS || code == CODE_SPACER ||
-            code == CODE_UNICODE || (code.startsWith(CODE_LAYER_PREFIX) && code.length > CODE_LAYER_PREFIX.length)
+            code == CODE_UNICODE || code == CODE_FN || (code.startsWith(CODE_LAYER_PREFIX) && code.length > CODE_LAYER_PREFIX.length)
         if (!validCode) {
             errors.add("line $lineNo: unknown key code \"$code\" in \"$token\"")
             ok = false
@@ -392,25 +437,26 @@ object LayoutText {
 // ---------------------------------------------------------------- default layout
 
 /**
- * The default layout, built from the arrangement tested on the phone:
+ * The default layout:
  *
- *  - letters: digits, qwerty, an indented home row, a wide shift and backspace,
- *    a modifier row (esc, prtsc, win, ctrl, alt, fn) and a bottom row with the
- *    comma and full stop beside a wide space bar. No row has more than ten
- *    keys, so every key stays comfortably wide. The arrow keys are NOT here:
- *    they live on the 123 page, where they are one tap away and do not crowd
- *    the typing layer. (Tab is gone on purpose; prtsc took its place.)
- *  - fn: F1 to F12 in two rows of six, and Home / PgUp / PgDn / End.
- *  - symbols1 (123): Android's ?123 page, plus the arrow cluster with the
- *    up arrow directly above the down arrow.
+ *  - letters: a thin top row with esc above the 1 key and prtsc above the 0 key, then digits,
+ *    qwerty, an indented home row, a wide shift and backspace, a modifier row (win, ctrl, alt,
+ *    fn) and a bottom row with the comma and full stop beside a wide space bar. No row has more
+ *    than ten keys. The arrow keys are on the 123 page, where they are one tap away and do not
+ *    crowd the typing page. (Tab is gone on purpose; prtsc took its place.)
+ *  - fn is not a page: pressing it changes keys in place. The digits become F1 to F10, esc
+ *    becomes F11 and prtsc F12 (they sit above F1 and F10), and the arrows become Home, PgUp,
+ *    PgDn and End. Press fn again to go back.
+ *  - symbols1 (123): Android's ?123 page, plus the arrow cluster with the up arrow directly
+ *    above the down arrow.
  *  - symbols2 (=\<): Android's second symbols page.
  *
- * Every layer adds up to the same total height (6.0) so the keyboard never
- * changes size when you switch layers: six rows of 1.0, or five of 1.2.
+ * Every layer adds up to the same total height (6.7) so the keyboard never changes size when
+ * you switch layers: a 0.7 top row plus six rows of 1.0, or five rows of 1.34.
  *
- * Symbols come from real physical keys plus shift wherever one exists (what a
- * physical US keyboard sends); only characters with no physical key (euro,
- * pi, ...) use the best-effort Unicode entry sequence.
+ * Symbols come from real physical keys plus shift wherever one exists (what a physical US
+ * keyboard sends); only characters with no physical key (euro, pi, ...) use the best-effort
+ * Unicode entry sequence.
  */
 object DefaultLayout {
 
@@ -421,18 +467,22 @@ object DefaultLayout {
 
     private fun letters(chars: String) = chars.map { k(it.toString(), "Key${it.uppercaseChar()}") }
     private fun digits() = "1234567890".map { k(it.toString(), "Digit$it") }
-    private fun fKeys(range: IntRange) = range.map { k("F$it", "F$it") }
 
-    /** esc, prtsc, win, ctrl, alt, fn: the same on every layer that has it. */
-    private fun modifiers() = listOf(
-        k("esc", "Escape"), k("prtsc", "PrintScreen"), k("win", "Meta"),
-        k("ctrl", "ctrl"), k("alt", "alt"), k("fn", "layer:fn"),
-    )
+    private fun esc() = k("esc", "Escape")
+    private fun prtsc() = k("prtsc", "PrintScreen")
+
+    /** win, ctrl, alt, fn */
+    private fun modifiers() = listOf(k("win", "Meta"), k("ctrl", "ctrl"), k("alt", "alt"), k("fn", CODE_FN))
 
     private fun bottom(backLabel: String, backLayer: String, comma: KeyDef = k(",", "Comma"), stop: KeyDef = k(".", "Period")) =
         RowDef(listOf(k(backLabel, "layer:$backLayer", 1.5f), comma, k("space", "Space", 5f), stop, k("enter", "Enter", 1.5f)))
 
+    // Height of one row on the pages that have five rows (see the total in the comment above).
+    private const val TALL = 1.34f
+
     private val lettersRows: List<RowDef> = listOf(
+        // esc is one key wide above the "1" column, prtsc one key wide above the "0" column.
+        RowDef(listOf(esc(), gap(8f), prtsc()), 0.7f),
         RowDef(digits()),
         RowDef(letters("qwertyuiop")),
         RowDef(listOf(gap(0.5f)) + letters("asdfghjkl") + gap(0.5f)),
@@ -441,69 +491,63 @@ object DefaultLayout {
         bottom("123", "symbols1"),
     )
 
-    private val fnRows: List<RowDef> = listOf(
-        RowDef(fKeys(1..6), 1.2f),
-        RowDef(fKeys(7..12), 1.2f),
-        RowDef(listOf(k("Home", "Home"), k("PgUp", "PageUp"), k("PgDn", "PageDown"), k("End", "End")), 1.2f),
-        RowDef(modifiers(), 1.2f),
-        bottom("123", "symbols1").copy(height = 1.2f),
-    )
-
     // Android's ?123 page with the arrow cluster. Row 3 has nine equal keys and the
     // up arrow sits in row 2 above the down arrow: the widths in row 2 are chosen so
     // both arrows share one column (up arrow's centre = 7.5 / 9 of the row, as the
     // down arrow's is in row 3).
     private val symbols1Rows: List<RowDef> = listOf(
-        RowDef(digits(), 1.2f),
+        RowDef(digits(), TALL),
         RowDef(
             listOf(
                 s("@", "Digit2"), s("#", "Digit3"), s("$", "Digit4"), s("%", "Digit5"), s("&", "Digit7"),
                 k("-", "Minus"), s("+", "Equal"), s("(", "Digit9"), s(")", "Digit0"), k("/", "Slash"),
             ),
-            1.2f,
+            TALL,
         ),
         RowDef(
             listOf(k("=\\<", "layer:symbols2", 1.5f)) + listOf(
                 s("*", "Digit8"), s("\"", "Quote"), k("'", "Quote"), s(":", "Semicolon"),
                 k(";", "Semicolon"), s("!", "Digit1"), s("?", "Slash"),
             ) + k("\u25B2", "ArrowUp", 1.21f) + k("\u232B", "Backspace", 1.21f),
-            1.2f,
+            TALL,
         ),
-        RowDef(modifiers() + listOf(k("\u25C0", "ArrowLeft"), k("\u25BC", "ArrowDown"), k("\u25B6", "ArrowRight")), 1.2f),
-        bottom("ABC", "letters").copy(height = 1.2f),
+        RowDef(
+            listOf(esc(), prtsc()) + modifiers() + listOf(k("\u25C0", "ArrowLeft"), k("\u25BC", "ArrowDown"), k("\u25B6", "ArrowRight")),
+            TALL,
+        ),
+        bottom("ABC", "letters").copy(height = TALL),
     )
 
     // Android's =\< page.
     private val symbols2Rows: List<RowDef> = listOf(
-        RowDef(digits(), 1.2f),
+        RowDef(digits(), TALL),
         RowDef(
             listOf(
                 s("~", "Backquote"), k("`", "Backquote"), s("|", "Backslash"), u("\u2022", "2022"), u("\u221A", "221a"),
                 u("\u03C0", "3c0"), u("\u00F7", "f7"), u("\u00D7", "d7"), u("\u00B6", "b6"), u("\u2206", "2206"),
             ),
-            1.2f,
+            TALL,
         ),
         RowDef(
             listOf(
                 u("\u00A3", "a3"), u("\u00A2", "a2"), u("\u20AC", "20ac"), u("\u00A5", "a5"), s("^", "Digit6"),
                 u("\u00B0", "b0"), k("=", "Equal"), s("{", "BracketLeft"), s("}", "BracketRight"), k("\\", "Backslash"),
             ),
-            1.2f,
+            TALL,
         ),
         RowDef(
             listOf(k("?123", "layer:symbols1", 1.5f)) + listOf(
                 s("%", "Digit5"), u("\u00A9", "a9"), u("\u00AE", "ae"), u("\u2122", "2122"), u("\u2713", "2713"),
                 k("[", "BracketLeft"), k("]", "BracketRight"),
             ) + k("\u232B", "Backspace", 1.5f),
-            1.2f,
+            TALL,
         ),
-        bottom("ABC", "letters", comma = s("<", "Comma"), stop = s(">", "Period")).copy(height = 1.2f),
+        bottom("ABC", "letters", comma = s("<", "Comma"), stop = s(">", "Period")).copy(height = TALL),
     )
 
     fun build(): LayoutDef = LayoutDef(
         listOf(
             LayerDef("letters", lettersRows),
-            LayerDef("fn", fnRows),
             LayerDef("symbols1", symbols1Rows),
             LayerDef("symbols2", symbols2Rows),
         ),

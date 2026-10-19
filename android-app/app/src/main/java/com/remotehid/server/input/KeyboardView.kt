@@ -33,9 +33,9 @@ private val BORDER_COLOR = Color.parseColor("#2B2B30")
 private val BORDER_PRESSED_COLOR = Color.parseColor("#55555E")
 private val TEXT_COLOR_LIGHT = Color.parseColor("#EDEDED")
 private val TEXT_COLOR_DARK = Color.parseColor("#0B0B0C")
-// Row height follows the screen (about 7.3% of its height, between 56 and 72dp) so the
+// Row height follows the screen (about 7% of its height, between 56 and 72dp) so the
 // keys are comfortably tall on a big phone without swallowing the trackpad on a small one.
-private const val ROW_HEIGHT_FRACTION = 0.073f
+private const val ROW_HEIGHT_FRACTION = 0.070f
 private const val MIN_ROW_DP = 56f
 private const val MAX_ROW_DP = 72f
 private const val KEY_RADIUS_DP = 12f
@@ -76,10 +76,12 @@ private const val EDIT_HINT = "Tap a key to select it. Drag it to move it, drag 
 
 /**
  * Full on-screen keyboard, built from a LayoutDef (KeyboardLayout.kt): layers
- * (letters, fn, the two symbol pages), rows, keys with widths. Ctrl/Alt/Shift
+ * (letters and the two symbol pages), rows, keys with widths. Ctrl/Alt/Shift
  * are sticky (tap to arm, next key only, then cleared) and stay armed across
- * layer switches. A key can switch layer (fn, 123, ABC, =\<); tapping the
- * toggle for the layer you are on returns to the first layer.
+ * layer switches. A key can switch layer (123, ABC, =\<); tapping the
+ * toggle for the layer you are on returns to the first layer. fn is not a
+ * layer: while it is on, keys change in place (digits become F1..F10, esc F11,
+ * prtsc F12, the arrows Home/PgUp/PgDn/End) until it is pressed again.
  *
  * Row height is fixed per row (not stretched to fill available space) — see
  * activity_main.xml, where this view is wrap_content height and the
@@ -138,6 +140,9 @@ class KeyboardView @JvmOverloads constructor(
     private var selRow = -1
     private var selKey = -1
 
+    // fn stays on until pressed again, and applies on whichever layer is showing.
+    private var fnActive = false
+
     private val armedMods = mutableSetOf<String>()
     private data class StickyInfo(val view: TextView, val restColor: Int, val restPressedColor: Int)
     private val modifierButtons = mutableMapOf<String, MutableList<StickyInfo>>()
@@ -187,6 +192,7 @@ class KeyboardView @JvmOverloads constructor(
     fun setEditMode(on: Boolean) {
         if (editMode == on) return
         editMode = on
+        if (on) fnActive = false  // edit the real keys, not their fn versions
         editBar.visibility = if (on) View.VISIBLE else View.GONE
         clearSelection()
         updateEditInfo()
@@ -243,7 +249,11 @@ class KeyboardView @JvmOverloads constructor(
         val toggledOn = key.layerTarget != null && key.layerTarget == currentLayer &&
             key.layerTarget != layout.defaultLayerName
         val armedSticky = key.isSticky && armedMods.contains(key.code)
-        val armed = toggledOn || armedSticky
+        val armedFn = key.isFnToggle && fnActive
+        val armed = toggledOn || armedSticky || armedFn
+
+        // While fn is on, plain keys show and send their function-key meaning (F1.., Home..).
+        val shown = if (fnActive && !editMode) key.fnVariant() ?: key else key
         val restColor = if (key.isModifierLook) MODIFIER_COLOR else KEY_COLOR
         val restPressedColor = if (key.isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
@@ -252,7 +262,7 @@ class KeyboardView @JvmOverloads constructor(
             typeface = keyTypeface
             layoutParams = params
         }
-        applyLabel(view, key.label)
+        applyLabel(view, shown.label)
         if (armed) {
             style(view, ARMED_COLOR, ARMED_PRESSED_COLOR, TEXT_COLOR_DARK, selected)
         } else {
@@ -275,7 +285,7 @@ class KeyboardView @JvmOverloads constructor(
         }
 
         view.setOnClickListener {
-            onKeyTapped(key, view, restColor, restPressedColor)
+            onKeyTapped(key, shown, view, restColor, restPressedColor)
         }
 
         if (key.isSticky) {
@@ -284,14 +294,21 @@ class KeyboardView @JvmOverloads constructor(
         return view
     }
 
-    private fun onKeyTapped(key: KeyDef, view: TextView, restColor: Int, restPressedColor: Int) {
+    /** `key` is the key in the layout; `shown` is what it currently is (its fn version while fn is on). */
+    private fun onKeyTapped(key: KeyDef, shown: KeyDef, view: TextView, restColor: Int, restPressedColor: Int) {
         val target = key.layerTarget
         when {
+            key.isFnToggle -> toggleFn()
             target != null -> switchLayer(if (target == currentLayer) layout.defaultLayerName else target)
             key.isSticky -> toggleModifier(key.code, view, restColor, restPressedColor)
-            key.code == CODE_UNICODE && key.unicode != null -> sendUnicodeChar(key.unicode, key.label)
-            else -> sendKey(key.code, key.mods)
+            shown.code == CODE_UNICODE && shown.unicode != null -> sendUnicodeChar(shown.unicode, shown.label)
+            else -> sendKey(shown.code, shown.mods)
         }
+    }
+
+    private fun toggleFn() {
+        fnActive = !fnActive
+        rebuild()  // every key re-labels in place; the fn key itself lights up while on
     }
 
     /** Single glyphs get the big size; multi-character labels (esc, PgUp, F10) a smaller one. */

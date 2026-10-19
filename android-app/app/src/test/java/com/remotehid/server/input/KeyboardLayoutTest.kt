@@ -20,7 +20,7 @@ class KeyboardLayoutTest {
     @Test
     fun `every layer is the same total height so the keyboard never resizes`() {
         for (layer in default.layers) {
-            near(6f, layer.rows.fold(0f) { a, r -> a + r.height }, 0.001f)
+            near(6.7f, layer.rows.fold(0f) { a, r -> a + r.height }, 0.001f)
         }
     }
 
@@ -28,7 +28,7 @@ class KeyboardLayoutTest {
     fun `default layout uses only valid codes and existing layers`() {
         val names = default.layers.map { it.name }.toSet()
         for (layer in default.layers) for (row in layer.rows) for (key in row.keys) {
-            val ok = key.code in PHYSICAL_CODES || key.isSticky || key.isSpacer ||
+            val ok = key.code in PHYSICAL_CODES || key.isSticky || key.isSpacer || key.isFnToggle ||
                 key.code == CODE_UNICODE || (key.layerTarget != null && key.layerTarget in names)
             assertTrue("bad key ${key.label}/${key.code} in ${layer.name}", ok)
             if (key.code == CODE_UNICODE) assertNotNull(key.unicode)
@@ -37,7 +37,7 @@ class KeyboardLayoutTest {
 
     @Test
     fun `letters layer has comma and full stop beside the space bar like Android`() {
-        val bottom = rowOf(default, "letters", 5).keys
+        val bottom = rowOf(default, "letters", 6).keys
         val space = bottom.indexOfFirst { it.code == "Space" }
         assertEquals("Comma", bottom[space - 1].code)
         assertEquals("Period", bottom[space + 1].code)
@@ -60,13 +60,6 @@ class KeyboardLayoutTest {
         for (layer in default.layers) for ((i, row) in layer.rows.withIndex()) {
             assertTrue("${layer.name} row $i has ${row.keys.size} keys", row.keys.count { !it.isSpacer } <= 10)
         }
-    }
-
-    @Test
-    fun `the letters layer has ten digits then the modifier row esc prtsc win ctrl alt fn`() {
-        val rows = default.layer("letters")!!.rows
-        assertEquals(10, rows[0].keys.size)
-        assertEquals(listOf("esc", "prtsc", "win", "ctrl", "alt", "fn"), rows[4].keys.map { it.label })
     }
 
     @Test
@@ -115,12 +108,121 @@ class KeyboardLayoutTest {
     }
 
     @Test
-    fun `the fn layer has F1 to F12 in two rows of six and the navigation keys`() {
-        val rows = default.layer("fn")!!.rows
-        assertEquals((1..6).map { "F$it" }, rows[0].keys.map { it.label })
-        assertEquals((7..12).map { "F$it" }, rows[1].keys.map { it.label })
-        assertEquals(listOf("Home", "PgUp", "PgDn", "End"), rows[2].keys.map { it.label })
-        assertEquals(listOf("esc", "prtsc", "win", "ctrl", "alt", "fn"), rows[3].keys.map { it.label })
+    fun `fn is not a page of its own`() {
+        assertEquals(listOf("letters", "symbols1", "symbols2"), default.layers.map { it.name })
+        for (layer in default.layers) {
+            assertTrue(layer.rows.flatMap { it.keys }.none { it.layerTarget == "fn" })
+        }
+    }
+
+    @Test
+    fun `esc is above the 1 key and prtsc above the 0 key on the letters layer`() {
+        val rows = default.layer("letters")!!.rows
+        fun centre(row: RowDef, code: String): Float {
+            var before = 0f
+            for (k in row.keys) {
+                if (k.code == code) return (before + k.weight / 2f) / row.totalWeight
+                before += k.weight
+            }
+            error("no $code")
+        }
+        assertEquals(listOf("esc", "prtsc"), rows[0].keys.filter { !it.isSpacer }.map { it.label })
+        near(centre(rows[1], "Digit1"), centre(rows[0], "Escape"), 0.001f)
+        near(centre(rows[1], "Digit0"), centre(rows[0], "PrintScreen"), 0.001f)
+        assertEquals(10, rows[1].keys.size)
+    }
+
+    @Test
+    fun `the modifier row is win ctrl alt fn and fn is a toggle`() {
+        val row = default.layer("letters")!!.rows[5]
+        assertEquals(listOf("win", "ctrl", "alt", "fn"), row.keys.map { it.label })
+        assertTrue(row.keys.last().isFnToggle)
+    }
+
+    // ---------------------------------------------------------- fn in place
+
+    private fun variant(code: String, mods: List<String> = emptyList()) = KeyDef("x", code, 1f, mods).fnVariant()
+
+    @Test
+    fun `fn turns the digits into F1 to F10`() {
+        val digits = default.layer("letters")!!.rows[1].keys
+        assertEquals((1..10).map { "F$it" }, digits.map { it.fnVariant()!!.label })
+        assertEquals((1..9).map { "F$it" } + "F10", digits.map { it.fnVariant()!!.code })
+    }
+
+    @Test
+    fun `fn turns esc into F11 and prtsc into F12`() {
+        assertEquals("F11", variant("Escape")!!.code)
+        assertEquals("F12", variant("PrintScreen")!!.code)
+        val top = default.layer("letters")!!.rows[0].keys.filter { !it.isSpacer }
+        assertEquals(listOf("F11", "F12"), top.map { it.fnVariant()!!.label })
+    }
+
+    @Test
+    fun `fn turns the arrows into the navigation keys`() {
+        assertEquals("Home", variant("ArrowLeft")!!.label)
+        assertEquals("PgUp", variant("ArrowUp")!!.label)
+        assertEquals("PgDn", variant("ArrowDown")!!.label)
+        assertEquals("End", variant("ArrowRight")!!.label)
+        assertEquals("PageUp", variant("ArrowUp")!!.code)   // the wire code is the real key name
+    }
+
+    @Test
+    fun `fn leaves other keys alone including symbols made with shift`() {
+        assertNull(variant("KeyQ"))
+        assertNull(variant("Space"))
+        assertNull(variant("Digit2", listOf("shift")))      // "@" is Shift+2, not the 2 key
+        assertNull(KeyDef("ctrl", "ctrl").fnVariant())
+        assertNull(KeyDef("fn", CODE_FN).fnVariant())
+        assertNull(KeyDef("", CODE_SPACER).fnVariant())
+        assertNull(KeyDef("123", "layer:symbols1").fnVariant())
+        assertNull(KeyDef("\u20AC", CODE_UNICODE, 1f, emptyList(), "20ac").fnVariant())
+    }
+
+    @Test
+    fun `on the 123 page fn changes the digits and the arrow cluster but not the symbols`() {
+        val rows = default.layer("symbols1")!!.rows
+        assertTrue(rows[0].keys.all { it.fnVariant() != null })                  // digits -> F1..F10
+        assertTrue(rows[1].keys.filter { it.mods.isNotEmpty() }.all { it.fnVariant() == null })  // @ # $ % & ( )
+        val dock = rows[3].keys
+        assertEquals(listOf("F11", "F12"), dock.take(2).map { it.fnVariant()!!.label })
+        assertEquals(listOf("Home", "PgDn", "End"), dock.takeLast(3).map { it.fnVariant()!!.label })
+        assertEquals("PgUp", rows[2].keys.first { it.code == "ArrowUp" }.fnVariant()!!.label)
+    }
+
+    @Test
+    fun `a fn variant keeps the width of its key`() {
+        assertEquals(1.5f, KeyDef("esc", "Escape", 1.5f).fnVariant()!!.weight, 0.001f)
+    }
+
+    // ---------------------------------------------------------- older layout text
+
+    @Test
+    fun `old layout text with a separate fn page still parses and its fn key becomes the toggle`() {
+        val text = """
+            remote-hid keyboard layout v1
+            layer letters
+            row 1  q|KeyQ  fn|layer:fn|1.5  123|layer:symbols1
+            layer fn
+            row 1  F1|F1  F2|F2  back|layer:letters
+            layer symbols1
+            row 1  1|Digit1  ABC|layer:letters
+        """.trimIndent()
+        val result = LayoutText.parse(text)
+        assertEquals(emptyList<String>(), result.errors)
+        val layout = result.layout!!
+        assertEquals(listOf("letters", "symbols1"), layout.layers.map { it.name })   // the fn page is gone
+        val fn = layout.layer("letters")!!.rows[0].keys[1]
+        assertEquals(CODE_FN, fn.code)
+        assertTrue(fn.isFnToggle)
+        assertEquals(1.5f, fn.weight, 0.001f)
+    }
+
+    @Test
+    fun `the fn toggle round trips through the text`() {
+        val result = LayoutText.parse(LayoutText.serialize(default))
+        assertEquals(emptyList<String>(), result.errors)
+        assertTrue(result.layout!!.layer("letters")!!.rows[5].keys.last().isFnToggle)
     }
 
     // ---------------------------------------------------------- text round trip
