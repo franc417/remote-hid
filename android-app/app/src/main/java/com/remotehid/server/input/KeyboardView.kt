@@ -253,7 +253,7 @@ class KeyboardView @JvmOverloads constructor(
         val armed = toggledOn || armedSticky || armedFn
 
         // While fn is on, plain keys show and send their function-key meaning (F1.., Home..).
-        val shown = if (fnActive && !editMode) key.fnVariant() ?: key else key
+        val shown = displayedKey(key, fnActive, editMode)
         val restColor = if (key.isModifierLook) MODIFIER_COLOR else KEY_COLOR
         val restPressedColor = if (key.isModifierLook) MODIFIER_PRESSED_COLOR else KEY_PRESSED_COLOR
 
@@ -285,7 +285,7 @@ class KeyboardView @JvmOverloads constructor(
         }
 
         view.setOnClickListener {
-            onKeyTapped(key, shown, view, restColor, restPressedColor)
+            onKeyTapped(key, view, restColor, restPressedColor)
         }
 
         if (key.isSticky) {
@@ -294,15 +294,14 @@ class KeyboardView @JvmOverloads constructor(
         return view
     }
 
-    /** `key` is the key in the layout; `shown` is what it currently is (its fn version while fn is on). */
-    private fun onKeyTapped(key: KeyDef, shown: KeyDef, view: TextView, restColor: Int, restPressedColor: Int) {
-        val target = key.layerTarget
-        when {
-            key.isFnToggle -> toggleFn()
-            target != null -> switchLayer(if (target == currentLayer) layout.defaultLayerName else target)
-            key.isSticky -> toggleModifier(key.code, view, restColor, restPressedColor)
-            shown.code == CODE_UNICODE && shown.unicode != null -> sendUnicodeChar(shown.unicode, shown.label)
-            else -> sendKey(shown.code, shown.mods)
+    private fun onKeyTapped(key: KeyDef, view: TextView, restColor: Int, restPressedColor: Int) {
+        // What the tap means is decided in the model (resolveTap, unit tested); this just does it.
+        when (val action = resolveTap(key, fnActive, editMode, currentLayer, layout.defaultLayerName)) {
+            is TapAction.ToggleFn -> toggleFn()
+            is TapAction.SwitchLayer -> switchLayer(action.name)
+            is TapAction.ToggleModifier -> toggleModifier(action.mod, view, restColor, restPressedColor)
+            is TapAction.SendUnicode -> sendUnicodeChar(action.hex, action.label)
+            is TapAction.SendKey -> sendKey(action.code, action.mods)
         }
     }
 

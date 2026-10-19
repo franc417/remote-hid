@@ -117,6 +117,38 @@ data class LayoutDef(val layers: List<LayerDef>) {
     val defaultLayerName: String get() = layers.first().name
 }
 
+// ---------------------------------------------------------------- what a tap does
+
+/**
+ * What tapping a key does right now. Kept free of Android types so the real key
+ * behaviour (fn, layers, sticky modifiers, symbols) can be unit tested; the view only
+ * carries the action out.
+ */
+sealed class TapAction {
+    object ToggleFn : TapAction()
+    data class SwitchLayer(val name: String) : TapAction()
+    data class ToggleModifier(val mod: String) : TapAction()
+    data class SendUnicode(val hex: String, val label: String) : TapAction()
+    data class SendKey(val code: String, val mods: List<String>) : TapAction()
+}
+
+/** The key as it currently looks and acts: its fn version while fn is on (and not editing). */
+fun displayedKey(key: KeyDef, fnActive: Boolean, editing: Boolean): KeyDef =
+    if (fnActive && !editing) key.fnVariant() ?: key else key
+
+fun resolveTap(key: KeyDef, fnActive: Boolean, editing: Boolean, currentLayer: String, defaultLayer: String): TapAction {
+    val shown = displayedKey(key, fnActive, editing)
+    val target = key.layerTarget
+    return when {
+        key.isFnToggle -> TapAction.ToggleFn
+        // Tapping the toggle for the layer you are already on goes back to the first layer.
+        target != null -> TapAction.SwitchLayer(if (target == currentLayer) defaultLayer else target)
+        key.isSticky -> TapAction.ToggleModifier(key.code)
+        shown.code == CODE_UNICODE && shown.unicode != null -> TapAction.SendUnicode(shown.unicode, shown.label)
+        else -> TapAction.SendKey(shown.code, shown.mods)
+    }
+}
+
 // ---------------------------------------------------------------- editing
 
 /**
