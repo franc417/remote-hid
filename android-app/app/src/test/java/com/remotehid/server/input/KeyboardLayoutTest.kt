@@ -174,7 +174,8 @@ class KeyboardLayoutTest {
         assertEquals("F11", variant("Escape")!!.code)
         assertEquals("F12", variant("PrintScreen")!!.code)
         val top = default.layer("letters")!!.rows[0].keys.filter { !it.isSpacer }
-        assertEquals(listOf("F11", "F12"), top.map { it.fnVariant()!!.label })
+        // esc and prtsc become F11 and F12; the "_" and "-" keys between them are not changed by fn.
+        assertEquals(listOf("F11", null, null, "F12"), top.map { it.fnVariant()?.label })
     }
 
     @Test
