@@ -32,6 +32,8 @@ import com.remotehid.server.input.KeyboardView
 import com.remotehid.server.input.LayoutText
 import com.remotehid.server.input.TrackpadView
 import com.remotehid.server.input.TypingModel
+import com.remotehid.server.net.LocalNetwork
+import com.remotehid.server.net.parseRendezvous
 import com.remotehid.server.net.RemoteHidService
 import com.remotehid.server.net.collectLocalAddresses
 import com.remotehid.server.net.describeAddresses
@@ -291,25 +293,37 @@ class MainActivity : AppCompatActivity() {
      * this is a one-shot side-channel handshake, not a role reversal.
      */
     private fun sendAnnounce(rendezvousAddress: String) {
+        val rendezvous = parseRendezvous(rendezvousAddress)
+        if (rendezvous == null) {
+            statusText.text = "That QR code is not from the Remote HID desktop app"
+            return
+        }
         statusText.text = "Pairing..."
         Thread {
-            try {
-                val parts = rendezvousAddress.split(":")
-                val host = parts[0]
-                val port = parts[1].toInt()
-                Socket(host, port).use { socket ->
-                    // The address this socket left from is, by definition, the one the desktop
-                    // can reach us on: the Wi-Fi address over Wi-Fi, the tether address over a
-                    // cable. (This used to always send the Wi-Fi address, wrong or missing
-                    // whenever the desktop was reached another way.)
-                    val reachable = socket.localAddress?.hostAddress?.takeIf { ':' !in it }
-                        ?: collectLocalAddresses().firstOrNull()?.ip
-                        ?: "unknown"
-                    socket.getOutputStream().write(("ws://$reachable:$PORT\n").toByteArray())
+            var lastError: Exception? = null
+            for (host in rendezvous.hosts) {
+                try {
+                    // LocalNetwork sends the connection out over the Wi-Fi / cable network the desktop is on, even when that
+                    // network has no internet and mobile data is on (the default network would be the mobile one).
+                    LocalNetwork.connect(applicationContext, host, rendezvous.port).use { socket ->
+                        // The address this socket left from is, by definition, the one the desktop
+                        // can reach us on: the Wi-Fi address over Wi-Fi, the tether address over a
+                        // cable. (This used to always send the Wi-Fi address, wrong or missing
+                        // whenever the desktop was reached another way.)
+                        val reachable = socket.localAddress?.hostAddress?.takeIf { ':' !in it }
+                            ?: collectLocalAddresses().firstOrNull()?.ip
+                            ?: "unknown"
+                        socket.getOutputStream().write(("ws://$reachable:$PORT\n").toByteArray())
+                    }
+                    runOnUiThread { statusText.text = statusLine() }
+                    return@Thread
+                } catch (e: Exception) {
+                    lastError = e
                 }
-                runOnUiThread { statusText.text = statusLine() }
-            } catch (e: Exception) {
-                runOnUiThread { statusText.text = "Pairing failed: ${e.message}" }
+            }
+            runOnUiThread {
+                statusText.text = "Pairing failed: ${lastError?.message ?: "no address worked"}. " +
+                    "Is the computer on the same Wi-Fi or hotspot as this phone?"
             }
         }.start()
     }

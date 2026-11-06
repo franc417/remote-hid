@@ -21,7 +21,7 @@ from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
-from netinfo import find_tether_gateways, scan_anchor_ips
+from netinfo import find_tether_gateways, qr_payload, reachable_ips, scan_anchor_ips
 from protocol import SessionReplaced
 from reconnect import PHONE_PORT, backoff_delay, candidates, filter_reachable, load_known, prioritize, remember, scan_subnet
 
@@ -272,8 +272,12 @@ class App:
         self.connect()
 
     def _show_qr(self):
-        payload = f"{local_ip()}:{RENDEZVOUS_PORT}"
-        self._qr_photo = ImageTk.PhotoImage(make_qr_image(payload))
+        ips = reachable_ips()
+        if not ips:
+            # No private address at all: a QR with 127.0.0.1 would only send the phone to itself.
+            self.status_var.set("No network address found. Connect this computer to the phone's Wi-Fi or hotspot (or plug in the cable), then try again")
+            return
+        self._qr_photo = ImageTk.PhotoImage(make_qr_image(qr_payload(ips, RENDEZVOUS_PORT)))
         self.qr_label.config(image=self._qr_photo)
 
     def _run_rendezvous(self):

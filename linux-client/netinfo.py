@@ -24,6 +24,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import subprocess
 from typing import List, Optional
 
@@ -193,3 +194,42 @@ def scan_anchor_ips(limit: int = 4) -> List[str]:
             seen.add(net)
             anchors.append(ip)
     return anchors[:limit]
+
+
+def _default_route_ip() -> Optional[str]:
+    """The address this machine would use to reach the internet, or None when there is no route to it. UDP connect() sends nothing."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def reachable_ips(limit: int = 4) -> List[str]:
+    """Every private IPv4 address of this machine a phone could reach it on, best guess first.
+
+    The QR code used to carry ONE address: the one the route to 8.8.8.8 leaves from. On a phone's hotspot that has no internet
+    there is no such route (or it leaves from a different network), so the QR carried 127.0.0.1 or the wrong address and the phone
+    could never pair. Now: the internet route's address when it is a private one, then one address per private subnet (USB
+    links first), whatever the internet situation."""
+    found: List[str] = []
+    default = _default_route_ip()
+    if default:
+        try:
+            ip = ipaddress.ip_address(default)
+        except ValueError:
+            ip = None
+        if ip is not None and ip.version == 4 and ip.is_private and not ip.is_loopback and not ip.is_link_local:
+            found.append(default)
+    for ip in scan_anchor_ips(limit):
+        if ip not in found:
+            found.append(ip)
+    return found[:limit]
+
+
+def qr_payload(ips: List[str], port: int) -> str:
+    """`ip:port`, or `ip1,ip2:port` when this machine has several addresses (the phone tries them in order)."""
+    return ",".join(ips) + f":{port}"

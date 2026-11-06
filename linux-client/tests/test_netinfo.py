@@ -150,3 +150,36 @@ def test_scan_anchors_cover_every_private_subnet_with_usb_first(monkeypatch, tmp
     anchors = netinfo.scan_anchor_ips()
     assert anchors[0] == "192.168.42.50"
     assert anchors == ["192.168.42.50", "192.168.1.20"]
+
+
+# ----------------------------------------------------------------- the QR code's addresses
+
+def test_a_hotspot_without_internet_still_gets_its_own_address_into_the_qr(monkeypatch):
+    """No route to the internet (the phone's data is off or used up): the old code said 127.0.0.1."""
+    fake_ip(monkeypatch, addr_show=[addr("wlan0", "192.168.43.17"), addr("lo", "127.0.0.1")])
+    monkeypatch.setattr(netinfo, "_default_route_ip", lambda: None)
+    assert netinfo.reachable_ips() == ["192.168.43.17"]
+
+
+def test_the_internet_route_address_comes_first_and_is_not_repeated(monkeypatch):
+    fake_ip(monkeypatch, addr_show=[addr("wlan0", "192.168.1.20"), addr("enp0s20f0u2", "192.168.42.50")])
+    monkeypatch.setattr(netinfo, "_default_route_ip", lambda: "192.168.1.20")
+    assert netinfo.reachable_ips() == ["192.168.1.20", "192.168.42.50"]
+
+
+def test_a_public_or_vpn_default_route_address_is_not_put_in_the_qr(monkeypatch):
+    fake_ip(monkeypatch, addr_show=[addr("wlan0", "192.168.43.17")])
+    for wrong in ("100.67.163.21", "8.8.4.4", "127.0.0.1", "169.254.1.1", "garbage"):
+        monkeypatch.setattr(netinfo, "_default_route_ip", lambda wrong=wrong: wrong)
+        assert netinfo.reachable_ips() == ["192.168.43.17"], wrong
+
+
+def test_no_private_address_at_all_gives_an_empty_list_never_loopback(monkeypatch):
+    fake_ip(monkeypatch, addr_show=[addr("lo", "127.0.0.1")])
+    monkeypatch.setattr(netinfo, "_default_route_ip", lambda: None)
+    assert netinfo.reachable_ips() == []
+
+
+def test_several_addresses_are_joined_for_the_phone_to_try_in_order():
+    assert netinfo.qr_payload(["192.168.1.20"], 8766) == "192.168.1.20:8766"
+    assert netinfo.qr_payload(["192.168.1.20", "192.168.43.17"], 8766) == "192.168.1.20,192.168.43.17:8766"
