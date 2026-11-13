@@ -183,3 +183,37 @@ def test_no_private_address_at_all_gives_an_empty_list_never_loopback(monkeypatc
 def test_several_addresses_are_joined_for_the_phone_to_try_in_order():
     assert netinfo.qr_payload(["192.168.1.20"], 8766) == "192.168.1.20:8766"
     assert netinfo.qr_payload(["192.168.1.20", "192.168.43.17"], 8766) == "192.168.1.20,192.168.43.17:8766"
+
+
+# ---------------------------------------------------------------- what the QR code says, and keeping it current
+
+def test_addresses_are_labelled_by_the_kind_of_link(monkeypatch, tmp_path):
+    root = make_sysfs(tmp_path, "enx0a1b2c3d4e5f", subsystem="usb")
+    monkeypatch.setattr(netinfo, "SYS_NET", root)
+    monkeypatch.setattr(netinfo, "is_usb_netdev", lambda name, sys_root=root: name.startswith("enx"))
+    monkeypatch.setattr(netinfo, "_ip_json", lambda *a: [addr("wlp3s0", "192.168.0.105"), addr("enx0a1b2c3d4e5f", "192.168.42.17"),
+                                                         addr("enp2s0", "10.0.0.4"), addr("br0", "172.20.0.1")])
+    assert netinfo.address_kinds() == {"192.168.0.105": "Wi-Fi", "192.168.42.17": "USB cable", "10.0.0.4": "Ethernet", "172.20.0.1": "br0"}
+    assert netinfo.describe_ips(["192.168.42.17", "192.168.0.105", "1.2.3.4"]) == ["192.168.42.17  (USB cable)", "192.168.0.105  (Wi-Fi)", "1.2.3.4"]
+
+
+def test_describing_addresses_survives_a_missing_ip_command(monkeypatch):
+    monkeypatch.setattr(netinfo, "_ip_json", lambda *a: None)
+    assert netinfo.describe_ips(["192.168.0.105"]) == ["192.168.0.105"]
+
+
+def test_the_watch_reports_the_first_look_then_only_changes():
+    seen = [["192.168.0.105"], ["192.168.0.105"], ["192.168.0.107"], ["192.168.0.107", "192.168.42.17"], []]
+    calls = iter(seen)
+    watch = netinfo.AddressWatch(ips_fn=lambda: next(calls), describe_fn=lambda ips: [f"{i} (x)" for i in ips])
+    assert watch.poll() == (["192.168.0.105"], ["192.168.0.105 (x)"])      # first look
+    assert watch.poll() is None                                            # nothing changed
+    assert watch.poll() == (["192.168.0.107"], ["192.168.0.107 (x)"])      # a new DHCP lease
+    assert watch.poll()[0] == ["192.168.0.107", "192.168.42.17"]           # the cable came up
+    assert watch.poll() == ([], [])                                        # everything went away
+
+
+def test_the_watch_reports_an_empty_first_look_too():
+    watch = netinfo.AddressWatch(ips_fn=lambda: [], describe_fn=lambda ips: [])
+    assert watch.poll() == ([], [])
+    assert watch.poll() is None

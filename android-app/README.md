@@ -24,7 +24,7 @@ Runs on the phone: embedded WebSocket server + trackpad/keyboard UI.
 - **`123` is still inert.** No symbol row yet.
 - **No Settings tab yet, on either app.** QR pairing is wired into the existing screens (a `scan` button on the main phone screen, a QR image in the desktop window) rather than a proper tabbed settings section. Worth doing as its own focused pass rather than folding it into this one.
 - **Three-finger gesture thresholds and the vertical-swipe direction are best guesses.** The horizontal workspace-switch shortcut is a confirmed shared default across GNOME, Cinnamon, MATE, and XFCE (see `TrackpadView.kt`'s doc comment) — but the swipe distance needed to trigger it, and whether up/down should map to overview/back specifically, are untested.
-- **The QR code the desktop shows never refreshes.** If the desktop's IP changes after launch, restart the app.
+- **The QR code follows the network** (it used to be drawn once, so a new DHCP lease or another network left it pointing at an old address and the phone timed out). The desktop checks its addresses every 2 s, redraws the code when they change and lists them under it with the kind of link (Wi-Fi, USB cable, Ethernet). Not yet checked on real hardware: how quickly a real router hands over a new lease.
 
 ## What's genuinely unverified
 

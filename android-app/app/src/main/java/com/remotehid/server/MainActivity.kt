@@ -18,6 +18,7 @@ import android.text.style.ForegroundColorSpan
 import android.text.style.StyleSpan
 import android.view.View
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.ImageAnalysis
@@ -33,6 +34,14 @@ import com.remotehid.server.input.LayoutText
 import com.remotehid.server.input.TrackpadView
 import com.remotehid.server.input.TypingModel
 import com.remotehid.server.net.LocalNetwork
+import com.remotehid.server.net.LostRace
+import com.remotehid.server.net.TetherMode
+import com.remotehid.server.net.computeTetherStatus
+import com.remotehid.server.net.explainPairingFailure
+import com.remotehid.server.net.openTetherSettings
+import com.remotehid.server.net.readTetherSignals
+import com.remotehid.server.net.tetherView
+import com.remotehid.server.net.tryAllHosts
 import com.remotehid.server.net.parseRendezvous
 import com.remotehid.server.net.RemoteHidService
 import com.remotehid.server.net.collectLocalAddresses
@@ -64,6 +73,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var typingBar: View
     private lateinit var typingLabel: TextView
     private val typingModel = TypingModel()
+
+    // The tether control (see tetherView): a prompt, a small green circle, or the status panel.
+    private lateinit var tetherBox: View
+    private lateinit var tetherCircle: TextView
+    private lateinit var tetherCard: View
+    private lateinit var tetherTitle: TextView
+    private lateinit var tetherDetail: TextView
+    private lateinit var tetherButton: TextView
+    private var tetherExpanded = false
 
     // QR scanning diagnostics: how many camera frames the analyser has seen this scan.
     private var scanFrames = 0
@@ -145,6 +163,28 @@ class MainActivity : AppCompatActivity() {
         typingPreview = findViewById(R.id.typingPreview)
         typingBar = findViewById(R.id.typingBar)
         typingLabel = findViewById(R.id.typingLabel)
+        tetherBox = findViewById(R.id.tetherBox)
+        tetherCircle = findViewById(R.id.tetherCircle)
+        tetherCard = findViewById(R.id.tetherCard)
+        tetherTitle = findViewById(R.id.tetherTitle)
+        tetherDetail = findViewById(R.id.tetherDetail)
+        tetherButton = findViewById(R.id.tetherButton)
+        tetherCircle.setOnClickListener {
+            tetherExpanded = true
+            renderTether()
+        }
+        val shrink = View.OnClickListener {
+            tetherExpanded = false
+            renderTether()
+        }
+        tetherTitle.setOnClickListener(shrink)
+        tetherDetail.setOnClickListener(shrink)
+        tetherButton.setOnClickListener {
+            // An app cannot switch tethering on (Android keeps that for the system), so this opens the page that has the switch.
+            if (!openTetherSettings(this)) {
+                Toast.makeText(this, "Open Settings and turn on USB tethering", Toast.LENGTH_LONG).show()
+            }
+        }
 
         statusText.text = getString(R.string.status_idle)
 
@@ -298,34 +338,47 @@ class MainActivity : AppCompatActivity() {
             statusText.text = "That QR code is not from the Remote HID desktop app"
             return
         }
-        statusText.text = "Pairing..."
+        statusText.text = "Pairing with " + rendezvous.hosts.joinToString(", ") + "..."
         Thread {
-            var lastError: Exception? = null
-            for (host in rendezvous.hosts) {
-                try {
-                    // LocalNetwork sends the connection out over the Wi-Fi / cable network the desktop is on, even when that
-                    // network has no internet and mobile data is on (the default network would be the mobile one).
-                    LocalNetwork.connect(applicationContext, host, rendezvous.port).use { socket ->
-                        // The address this socket left from is, by definition, the one the desktop
-                        // can reach us on: the Wi-Fi address over Wi-Fi, the tether address over a
-                        // cable. (This used to always send the Wi-Fi address, wrong or missing
-                        // whenever the desktop was reached another way.)
-                        val reachable = socket.localAddress?.hostAddress?.takeIf { ':' !in it }
-                            ?: collectLocalAddresses().firstOrNull()?.ip
-                            ?: "unknown"
-                        socket.getOutputStream().write(("ws://$reachable:$PORT\n").toByteArray())
-                    }
-                    runOnUiThread { statusText.text = statusLine() }
-                    return@Thread
-                } catch (e: Exception) {
-                    lastError = e
+            // Every address the QR code listed is tried at the same time; the first that answers wins, and only it is told our
+            // address. LocalNetwork sends each connection out over the Wi-Fi / cable network that address is on, even when that
+            // network has no internet and mobile data is on (the default network would be the mobile one).
+            val outcome = tryAllHosts(rendezvous.hosts) { host, claim ->
+                LocalNetwork.connect(applicationContext, host, rendezvous.port).use { socket ->
+                    // The address this socket left from is, by definition, the one the desktop can reach us on: the Wi-Fi
+                    // address over Wi-Fi, the tether address over a cable.
+                    val reachable = socket.localAddress?.hostAddress?.takeIf { ':' !in it }
+                        ?: collectLocalAddresses().firstOrNull()?.ip
+                        ?: "unknown"
+                    if (!claim()) throw LostRace()
+                    socket.getOutputStream().write(("ws://$reachable:$PORT\n").toByteArray())
+                    socket.getOutputStream().flush()
                 }
             }
             runOnUiThread {
-                statusText.text = "Pairing failed: ${lastError?.message ?: "no address worked"}. " +
-                    "Is the computer on the same Wi-Fi or hotspot as this phone?"
+                statusText.text = if (outcome.winner != null) {
+                    "Sent this phone's address to ${outcome.winner}. The computer is connecting..."
+                } else {
+                    explainPairingFailure(outcome.failures, collectLocalAddresses(), rendezvous.port)
+                }
             }
         }.start()
+    }
+
+    /** Shows the tether control for the state the phone is in right now (see tetherView). */
+    private fun renderTether() {
+        val status = computeTetherStatus(readTetherSignals(applicationContext))
+        if (!status.tethering) tetherExpanded = false  // once tethering is off again, the next time starts as the small circle
+        val view = tetherView(status, tetherExpanded)
+        tetherBox.visibility = if (view.mode == TetherMode.HIDDEN) View.GONE else View.VISIBLE
+        tetherCircle.visibility = if (view.mode == TetherMode.CIRCLE) View.VISIBLE else View.GONE
+        val card = view.mode == TetherMode.PROMPT || view.mode == TetherMode.PANEL
+        tetherCard.visibility = if (card) View.VISIBLE else View.GONE
+        if (card) {
+            tetherTitle.text = view.title
+            tetherDetail.text = view.detail
+            tetherButton.text = view.buttonText
+        }
     }
 
     private fun statusLine(): String = describeAddresses(collectLocalAddresses(), PORT)
@@ -355,6 +408,7 @@ class MainActivity : AppCompatActivity() {
     // joined); USB tethering is not a "network" Android notifies about, so just look again.
     private val statusRefresh = object : Runnable {
         override fun run() {
+            renderTether()
             val current = statusText.text.toString()
             if (service?.isServerRunning == true && (current.startsWith("Listening") || current.startsWith("No network"))) {
                 statusText.text = statusLine()
@@ -365,6 +419,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        renderTether()  // coming back from the system tethering page: show the new state at once
         uiHandler.postDelayed(statusRefresh, STATUS_REFRESH_MS)
     }
 

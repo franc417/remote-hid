@@ -779,3 +779,155 @@ def test_finding_the_phone_you_are_already_connected_to_does_not_reconnect(monke
         assert runs == ["ws://10.0.0.7:8765"]
     finally:
         app._on_close()
+
+
+# ---------------------------------------------------------------- the QR code follows the network
+
+import netinfo  # noqa: E402
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _qr_app(monkeypatch, tmp_path, ips_now, port=None):
+    """An App whose QR code looks at `ips_now()` (a list it can change) every 50 ms, with no real `ip` calls, and its own
+    pairing port (an App left over from an earlier test still holds the default one)."""
+    monkeypatch.setattr(gui, "RENDEZVOUS_PORT", port or _free_port())
+    monkeypatch.setattr(gui, "UinputBackend", MockBackend)
+    monkeypatch.setattr(gui, "CONFIG_PATH", tmp_path / "last_connection.json")
+    monkeypatch.setattr(gui, "ADDRESS_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(gui, "reachable_ips", lambda limit=4: list(ips_now()))
+    monkeypatch.setattr(netinfo, "reachable_ips", lambda limit=4: list(ips_now()))
+    monkeypatch.setattr(netinfo, "describe_ips", lambda ips: [f"{i}  (Wi-Fi)" for i in ips])
+    root = tk.Tk()
+    return root, gui.App(root)
+
+
+def test_the_qr_code_moves_to_the_new_address_when_the_network_changes(monkeypatch, tmp_path):
+    ips = ["192.168.0.105"]
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ips)
+    try:
+        assert _wait(root, lambda: "192.168.0.105  (Wi-Fi)" in app.addr_var.get())
+        first = app._qr_photo
+        ips[:] = ["10.20.30.7"]                                         # the laptop joined another network
+        assert _wait(root, lambda: "10.20.30.7  (Wi-Fi)" in app.addr_var.get()), app.addr_var.get()
+        assert "192.168.0.105" not in app.addr_var.get()
+        assert app._qr_photo is not first                               # the picture was redrawn for the new address
+        assert str(gui.RENDEZVOUS_PORT) in app.addr_var.get()
+    finally:
+        app._on_close()
+
+
+def test_the_qr_code_is_not_redrawn_when_nothing_changed(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105"])
+    try:
+        assert _wait(root, lambda: "(Wi-Fi)" in app.addr_var.get())
+        photo = app._qr_photo
+        end = time.time() + 0.4
+        while time.time() < end:
+            root.update()
+            time.sleep(0.02)
+        assert app._qr_photo is photo
+    finally:
+        app._on_close()
+
+
+def test_with_no_network_the_qr_goes_away_and_comes_back_by_itself(monkeypatch, tmp_path):
+    ips = []
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ips)
+    try:
+        assert _wait(root, lambda: app.status_var.get().startswith("No network address"))
+        assert app._qr_photo is None and "No network address" in app.addr_var.get()
+        ips[:] = ["192.168.43.17"]                                      # the phone's hotspot was joined
+        assert _wait(root, lambda: "192.168.43.17" in app.addr_var.get())
+        assert app._qr_photo is not None
+        assert app.status_var.get().startswith("Network found")
+        ips[:] = []                                                     # and left again
+        assert _wait(root, lambda: app._qr_photo is None)
+    finally:
+        app._on_close()
+
+
+def test_two_addresses_are_both_listed_under_the_code(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105", "192.168.42.17"])
+    try:
+        assert _wait(root, lambda: "192.168.42.17" in app.addr_var.get())
+        assert "192.168.0.105" in app.addr_var.get()
+    finally:
+        app._on_close()
+
+
+# ---------------------------------------------------------------- the pairing listener must survive bad connections
+
+def _listening(app, port, seconds=3.0):
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            return True
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def test_a_connection_that_drops_without_saying_anything_does_not_end_the_listener(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105"], port=8791)
+    try:
+        assert _listening(app, 8791)
+        for _ in range(3):                                              # a port scan, a phone that lost Wi-Fi halfway
+            c = socket.create_connection(("127.0.0.1", 8791), timeout=2)
+            c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")   # close with a reset
+            c.close()
+        with socket.create_connection(("127.0.0.1", 8791), timeout=2) as conn:
+            conn.sendall(b"ws://127.0.0.1:8792\n")
+        assert _wait(root, lambda: app.uri_var.get() == "ws://127.0.0.1:8792")
+    finally:
+        app._on_close()
+
+
+def test_a_silent_connection_does_not_hold_up_the_next_phone_for_long(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105"], port=8793)
+    silent = None
+    try:
+        assert _listening(app, 8793)
+        silent = socket.create_connection(("127.0.0.1", 8793), timeout=2)      # connects and says nothing
+        time.sleep(0.2)
+        with socket.create_connection(("127.0.0.1", 8793), timeout=2) as conn:
+            conn.sendall(b"ws://127.0.0.1:8794\n")
+        assert _wait(root, lambda: app.uri_var.get() == "ws://127.0.0.1:8794", seconds=8.0)
+    finally:
+        if silent:
+            silent.close()
+        app._on_close()
+
+
+def test_an_announce_that_arrives_in_two_pieces_is_read_whole(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105"], port=8795)
+    try:
+        assert _listening(app, 8795)
+        with socket.create_connection(("127.0.0.1", 8795), timeout=2) as conn:
+            conn.sendall(b"ws://127.0.0.1")
+            time.sleep(0.3)
+            conn.sendall(b":8796\n")
+        assert _wait(root, lambda: app.uri_var.get() == "ws://127.0.0.1:8796")
+    finally:
+        app._on_close()
+
+
+def test_something_that_is_not_an_announce_is_ignored(monkeypatch, tmp_path):
+    root, app = _qr_app(monkeypatch, tmp_path, lambda: ["192.168.0.105"], port=8797)
+    try:
+        before = app.uri_var.get()
+        assert _listening(app, 8797)
+        with socket.create_connection(("127.0.0.1", 8797), timeout=2) as conn:
+            conn.sendall(b"GET / HTTP/1.1\r\n\r\n")
+        time.sleep(0.4)
+        root.update()
+        assert app.uri_var.get() == before
+    finally:
+        app._on_close()

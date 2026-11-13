@@ -230,6 +230,56 @@ def reachable_ips(limit: int = 4) -> List[str]:
     return found[:limit]
 
 
+def address_kinds() -> dict:
+    """ip -> what kind of link it is on ("USB cable", "Wi-Fi", "Ethernet", or the interface name), for this machine's IPv4 addresses.
+    Only for showing the person which network the QR code points the phone to."""
+    kinds = {}
+    for iface in _ip_json("addr", "show") or []:
+        name = iface.get("ifname", "")
+        if looks_like_usb_name(name) or is_usb_netdev(name):
+            kind = "USB cable"
+        elif name.startswith("wl"):
+            kind = "Wi-Fi"
+        elif name.startswith(("en", "eth")):
+            kind = "Ethernet"
+        else:
+            kind = name or "network"
+        for addr in iface.get("addr_info", []):
+            local = addr.get("local")
+            if local and _ipv4_address({"addr_info": [addr]}):
+                kinds[local] = kind
+    return kinds
+
+
+def describe_ips(ips: List[str]) -> List[str]:
+    """['192.168.0.105  (Wi-Fi)', ...] in the same order as ips."""
+    kinds = address_kinds()
+    return [f"{ip}  ({kinds[ip]})" if ip in kinds else ip for ip in ips]
+
+
+class AddressWatch:
+    """Notices when the addresses this computer can be reached on change (Wi-Fi joined or left, hotspot turned on, cable plugged
+    in, a new DHCP lease), so the QR code never points at an address that is no longer yours.
+
+    The QR code used to be drawn once, when the window opened. Open the window on one network, move to another (or get a
+    different lease on the same one) and the phone was sent to an old address: it waited out its connection timeout and
+    reported "failed to connect ... after 3000ms", with nothing on screen to show the address had changed.
+
+    poll() returns (ips, labels) the first time and whenever the list changes, otherwise None."""
+
+    def __init__(self, ips_fn=None, describe_fn=None) -> None:
+        self._ips_fn = ips_fn or reachable_ips
+        self._describe_fn = describe_fn or describe_ips
+        self._last = None
+
+    def poll(self):
+        ips = list(self._ips_fn())
+        if self._last is not None and ips == self._last:
+            return None
+        self._last = ips
+        return ips, self._describe_fn(ips)
+
+
 def qr_payload(ips: List[str], port: int) -> str:
     """`ip:port`, or `ip1,ip2:port` when this machine has several addresses (the phone tries them in order)."""
     return ",".join(ips) + f":{port}"

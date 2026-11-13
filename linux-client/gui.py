@@ -12,6 +12,7 @@ import json
 import queue
 import socket
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from urllib.parse import urlparse
@@ -21,12 +22,13 @@ from PIL import ImageTk
 
 from client import run_client
 from input_backend import UinputBackend
-from netinfo import find_tether_gateways, qr_payload, reachable_ips, scan_anchor_ips
+from netinfo import AddressWatch, find_tether_gateways, qr_payload, reachable_ips, scan_anchor_ips
 from protocol import SessionReplaced
 from reconnect import PHONE_PORT, backoff_delay, candidates, filter_reachable, load_known, prioritize, remember, scan_subnet
 
 CONFIG_PATH = Path.home() / ".config" / "remote-hid" / "last_connection.json"
 RENDEZVOUS_PORT = 8766
+ADDRESS_POLL_SECONDS = 2.0  # how often the QR code checks that it still points at this computer
 
 BG = "#000000"
 SURFACE = "#1E1E1E"
@@ -193,6 +195,10 @@ class App:
         self.qr_label = tk.Label(root, bg=BG)
         self.qr_label.pack(pady=4)
         self._qr_photo = None  # kept alive here — Tkinter drops images with no live reference
+        # Which addresses the QR code is carrying right now: the first thing to look at when a phone cannot pair.
+        self.addr_var = tk.StringVar(value="")
+        tk.Label(root, textvariable=self.addr_var, bg=BG, fg=MUTED, justify=tk.CENTER, wraplength=380).pack(pady=(0, 4))
+        self._qr_ips = None
 
         # The background threads (rendezvous listener, and later the
         # connection thread) never touch Tkinter directly — they only
@@ -210,6 +216,7 @@ class App:
         self._poll_job = self.root.after(100, self._poll_queue)
 
         self._show_qr()
+        threading.Thread(target=self._watch_addresses, daemon=True).start()
         threading.Thread(target=self._run_rendezvous, daemon=True).start()
 
     def _poll_queue(self):
@@ -223,6 +230,9 @@ class App:
                 elif kind == "reset_button":
                     self.connected = False
                     self.connect_button.config(text="Connect")
+                elif kind == "qr_addresses":
+                    ips, labels = payload
+                    self._show_qr(ips, labels)
                 elif kind == "found_phones":
                     self.find_button.config(state=tk.NORMAL)
                     self._on_phones_found(payload)
@@ -271,14 +281,43 @@ class App:
         self.status_var.set(f"Found a phone{extra}, connecting...")
         self.connect()
 
-    def _show_qr(self):
-        ips = reachable_ips()
+    def _show_qr(self, ips=None, labels=None):
+        """Draws the pairing QR for these addresses (looked up now when not given) and lists them under it."""
+        if ips is None:
+            ips = reachable_ips()
+        if labels is None:
+            labels = list(ips)
+        text = f"The QR sends the phone to port {RENDEZVOUS_PORT} on:\n" + "\n".join(labels)
+        if ips and ips == self._qr_ips and self._qr_photo is not None:
+            self.addr_var.set(text)  # same addresses: no redraw (it would flicker), but the labels may have just become known
+            return
+        self._qr_ips = list(ips)
         if not ips:
             # No private address at all: a QR with 127.0.0.1 would only send the phone to itself.
-            self.status_var.set("No network address found. Connect this computer to the phone's Wi-Fi or hotspot (or plug in the cable), then try again")
+            self._qr_photo = None
+            self.qr_label.config(image="")
+            self.addr_var.set("No network address found")
+            self.status_var.set("No network address found. Connect this computer to the phone's Wi-Fi or hotspot (or plug in the cable); the QR code appears by itself")
             return
         self._qr_photo = ImageTk.PhotoImage(make_qr_image(qr_payload(ips, RENDEZVOUS_PORT)))
         self.qr_label.config(image=self._qr_photo)
+        self.addr_var.set(text)
+        if self.status_var.get().startswith("No network address"):
+            self.status_var.set("Network found: scan the QR code with the phone")
+
+    def _watch_addresses(self):
+        """Keeps the QR code honest: every few seconds, looks at this computer's addresses and tells the GUI (through the queue,
+        never Tkinter directly) when they changed. Runs for the app's lifetime."""
+        watch = AddressWatch()
+        while True:
+            try:
+                change = watch.poll()
+            except Exception as exc:  # a failed lookup must not end the watching
+                print(f"[gui] address check failed: {exc}")
+                change = None
+            if change is not None:
+                self.status_queue.put(("qr_addresses", change, None))
+            time.sleep(ADDRESS_POLL_SECONDS)
 
     def _run_rendezvous(self):
         """Listens for a phone announcing its address after scanning
@@ -287,25 +326,40 @@ class App:
         forever, so re-scanning later (e.g. after a disconnect) works
         too. Only ever touches the queue, never Tkinter directly, same
         rule as _run().
+
+        One bad connection must never end this thread (it used to: a phone that connected and then dropped raised out of
+        recv() and the listener was gone until the app restarted), and a connection that sends nothing must not hold it
+        up (a port scan, or a phone that lost its Wi-Fi halfway): each one gets a few seconds to say its piece.
         """
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             srv.bind(("0.0.0.0", RENDEZVOUS_PORT))
-            srv.listen(1)
+            srv.listen(8)
         except OSError as exc:
             self.status_queue.put(("status", f"Rendezvous listener failed: {exc}", None))
             return
 
         while True:
             try:
-                conn, _ = srv.accept()
+                conn, peer = srv.accept()
             except OSError:
                 return
-            with conn:
-                data = conn.recv(200).decode("utf-8", errors="replace").strip()
-            if data.startswith("ws://") or data.startswith("wss://"):
-                self.status_queue.put(("announced_uri", data, None))
+            try:
+                with conn:
+                    conn.settimeout(3.0)
+                    data = b""
+                    while b"\n" not in data and len(data) < 200:
+                        chunk = conn.recv(200 - len(data))
+                        if not chunk:
+                            break
+                        data += chunk
+                text = data.decode("utf-8", errors="replace").strip()
+            except OSError:
+                continue  # reset, or silent for too long: wait for the next phone
+            if text.startswith("ws://") or text.startswith("wss://"):
+                self.status_queue.put(("status", f"A phone at {peer[0]} announced itself, connecting...", None))
+                self.status_queue.put(("announced_uri", text, None))
 
     def toggle(self):
         if self.connected:

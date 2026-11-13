@@ -184,6 +184,23 @@ own addresses (Wi-Fi and USB) at the top of the app if you prefer to type one. T
 drawn large with the full quiet zone, which is what small phone cameras need.
 
 
+## The QR code, the addresses, and the cable
+
+- **The QR code follows the network.** The desktop looks at its own addresses every 2 seconds and redraws the code when they
+  change (Wi-Fi joined or left, a hotspot turned on, the cable plugged in, a new DHCP lease). The addresses it carries are
+  printed under the code with the kind of link: `192.168.0.105  (Wi-Fi)`, `192.168.42.17  (USB cable)`.
+- **The phone tries every address in the code at once** and announces itself to the first that answers. If none does, it lists
+  each address with a plain reason (no answer / refused / no route), the addresses the phone itself is on, and the likely
+  cause: no address on the phone's network means the code is stale (scan the new one); an address on the same network that
+  does not answer means a firewall on the computer (port 8766) or a router that keeps devices apart (guest Wi-Fi). **Find
+  phone** on the computer is the way round both: the computer then connects to the phone, which needs no inbound port here.
+- **The cable.** With USB tethering on, the computer gets an address on the cable and the phone's address there is found by
+  itself (Connect with an empty address, or Find phone). The phone's main screen shows a tether control when the cable is in:
+  a prompt while tethering is off (its button opens the system tethering page: Android does not let an app switch tethering
+  on), a small green **T** circle once it is on, a status panel when you tap the circle (USB tethering and hotspot, with
+  addresses), and a tap on the panel's header shrinks it back to the circle.
+
+
 ## Starting the GUI with one word
 
 ```
