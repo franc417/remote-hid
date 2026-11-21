@@ -931,3 +931,46 @@ def test_something_that_is_not_an_announce_is_ignored(monkeypatch, tmp_path):
         assert app.uri_var.get() == before
     finally:
         app._on_close()
+
+
+def test_cable_check_button_shows_the_report_and_connects_to_a_phone_it_found(monkeypatch):
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+        calls = []
+        monkeypatch.setattr(app, "connect", lambda: calls.append(app.uri_var.get()))
+        app.cable_button.config(state=tk.DISABLED)
+        report = {"verdict": "phone_found", "uri": "ws://192.168.42.129:8765", "summary": "Phone found on the cable: ws://192.168.42.129:8765", "text": "Cable check\n..."}
+        app.status_queue.put(("cable_report", report, None))
+        deadline = time.time() + 3
+        while time.time() < deadline and not calls:
+            root.update()
+            time.sleep(0.02)
+        assert calls == ["ws://192.168.42.129:8765"]
+        assert str(app.cable_button.cget("state")) == "normal" and "Phone found on the cable" in app.status_var.get()
+    finally:
+        app._on_close()
+
+
+def test_a_phone_that_answers_on_the_cable_is_connected_to_by_itself(monkeypatch):
+    root = tk.Tk()
+    try:
+        app = gui.App(root)
+        root.update()
+        calls = []
+        monkeypatch.setattr(app, "connect", lambda: calls.append(app.uri_var.get()))
+        app.status_queue.put(("cable_phone", "ws://192.168.42.129:8765", None))
+        deadline = time.time() + 3
+        while time.time() < deadline and not calls:
+            root.update()
+            time.sleep(0.02)
+        assert calls == ["ws://192.168.42.129:8765"] and "connecting" in app.status_var.get()
+        app.connected = True                                              # when already connected, a cable phone does not take over
+        app.status_queue.put(("cable_phone", "ws://192.168.42.130:8765", None))
+        for _ in range(10):
+            root.update()
+            time.sleep(0.02)
+        assert calls == ["ws://192.168.42.129:8765"]
+    finally:
+        app._on_close()

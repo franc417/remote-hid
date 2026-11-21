@@ -199,6 +199,13 @@ drawn large with the full quiet zone, which is what small phone cameras need.
   a prompt while tethering is off (its button opens the system tethering page: Android does not let an app switch tethering
   on), a small green **T** circle once it is on, a status panel when you tap the circle (USB tethering and hotspot, with
   addresses), and a tap on the panel's header shrinks it back to the circle.
+- **Check cable.** If the phone says it is listening on the cable but the computer does not connect, press **Check cable** in the
+  desktop window (or run `python3 linux-client/cablecheck.py`, add `--fix` to let it ask NetworkManager). It names the first thing
+  that is not true: no cable port at all on this computer (turn *USB tethering* on, not *File transfer*; try another cable, a
+  charge-only cable has no data wires); a cable port with no address (it asks NetworkManager to bring the port up, the same as
+  clicking it in the network menu); or an address on the cable where the phone's app does not answer (it lists what it tried and
+  what the phone should show). When a phone answers on the cable the window connects to it by itself, once; after you press
+  Disconnect it leaves the phone alone until the cable has been unplugged and plugged in again.
 
 
 ## Starting the GUI with one word

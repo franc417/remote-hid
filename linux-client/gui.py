@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import qrcode
 from PIL import ImageTk
 
+import cablecheck
 from client import run_client
 from input_backend import UinputBackend
 from netinfo import AddressWatch, find_tether_gateways, qr_payload, reachable_ips, scan_anchor_ips
@@ -174,6 +175,19 @@ class App:
             activeforeground=FG,
         )
         self.find_button.pack(pady=(0, 6))
+        self.cable_button = tk.Button(
+            root,
+            text="Check cable",
+            command=self.check_cable,
+            width=18,
+            bg=SURFACE,
+            fg=FG,
+            relief=tk.FLAT,
+            activebackground="#333333",
+            activeforeground=FG,
+        )
+        self.cable_button.pack(pady=(0, 6))
+        self._cable_offer = cablecheck.CableOffer()
 
         # A plain attribute mirrors the checkbox: the connection thread reads
         # it, and Tk variables must only be touched from the main thread.
@@ -236,6 +250,14 @@ class App:
                 elif kind == "found_phones":
                     self.find_button.config(state=tk.NORMAL)
                     self._on_phones_found(payload)
+                elif kind == "cable_report":
+                    self.cable_button.config(state=tk.NORMAL)
+                    self._on_cable_report(payload)
+                elif kind == "cable_phone":
+                    if not self.connected:
+                        self.status_var.set("Phone found on the cable: connecting...")
+                        self.uri_var.set(payload)
+                        self.connect()
                 elif kind == "announced_uri":
                     current = self.session.target if self.session else None
                     if self.connected and payload == current:
@@ -248,6 +270,43 @@ class App:
         except queue.Empty:
             pass
         self._poll_job = self.root.after(100, self._poll_queue)
+
+    def check_cable(self):
+        """Says what this computer sees of a phone on the cable (and brings the cable's port up when it has no address). Off the UI thread."""
+        self.cable_button.config(state=tk.DISABLED)
+        self.status_var.set("Checking the cable...")
+        threading.Thread(target=self._cable_worker, daemon=True).start()
+
+    def _cable_worker(self):
+        try:
+            report = cablecheck.diagnose()
+            if report["verdict"] == "no_address":
+                note = cablecheck.try_fix(report["links"][0]["name"])
+                time.sleep(6)  # DHCP from the phone takes a few seconds
+                report = cablecheck.diagnose()
+                report["text"] += f"\n\nTried to fix it: {note}"
+        except Exception as exc:  # the check must always answer
+            text = f"The cable check failed: {exc}"
+            report = {"verdict": "error", "uri": None, "summary": text, "text": text}
+        self.status_queue.put(("cable_report", report, None))
+
+    def _on_cable_report(self, report):
+        self.status_var.set(report["summary"])
+        win = tk.Toplevel(self.root)
+        win.title("Cable check")
+        win.configure(bg=BG)
+        box = tk.Text(win, width=80, height=16, bg=SURFACE, fg=FG, wrap="word", relief=tk.FLAT)
+        box.insert("1.0", report["text"])
+        box.config(state=tk.DISABLED)
+        box.pack(padx=8, pady=8)
+
+        def copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(report["text"])
+        tk.Button(win, text="Copy", command=copy, bg=SURFACE, fg=FG, relief=tk.FLAT).pack(pady=(0, 8))
+        if report.get("uri") and not self.connected:
+            self.uri_var.set(report["uri"])
+            self.connect()
 
     def find_phone(self):
         """Looks for the phone without any QR code: a phone on a cable first,
@@ -317,6 +376,19 @@ class App:
                 change = None
             if change is not None:
                 self.status_queue.put(("qr_addresses", change, None))
+            try:  # a phone on the cable: connect to it by itself, once, instead of waiting for a button
+                cable = tether_uris()
+                if not cable:
+                    reachable = []
+                elif self.connected:
+                    reachable = cable  # already connected: only note that this phone has been seen
+                else:
+                    reachable = filter_reachable(cable)
+                uri = self._cable_offer.update(reachable, self.connected)
+                if uri:
+                    self.status_queue.put(("cable_phone", uri, None))
+            except Exception as exc:  # a failed lookup must not end the watching
+                print(f"[gui] cable look failed: {exc}")
             time.sleep(ADDRESS_POLL_SECONDS)
 
     def _run_rendezvous(self):
@@ -389,7 +461,7 @@ class App:
                 uri = cable[0]
                 self.uri_var.set(uri)
         if not is_valid_ws_uri(uri):
-            self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765 (or plug the phone in with USB tethering on)")
+            self.status_var.set("Enter a full address, e.g. ws://192.168.1.5:8765 (or plug the phone in with USB tethering on, and press Check cable)")
             return
         self._end_session()  # switching phones / reconnecting: drop the old one cleanly first
         session = Session()
